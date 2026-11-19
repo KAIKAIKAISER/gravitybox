@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-19
+
+### Added
+- **Native Deep ASAR Localization (`src/asar-patcher.ts` & `ui/app.js`)**：集成零外部依赖纯 Node.js 原生 ASAR 补丁引擎与标准化深度汉化包（`assets/zh-pack.json`，2,783 条白名单精校词条与 463 条动态正则，涵盖 `preload.js`、`main.js` `plugin://` 子框架、`menu.js`、`tray.js`、`remote/*` SSH 窗口等全部 16+ 模块），提供一键应用深度汉化、自动原版双备份与一键还原。
+- **Workflow A Cloud Sync & Pending Scanner**：支持直接从 `KAIKAIKAISER/antigravity-zh-asar` GitHub Release 在线同步最新 `zh-pack.json`；内置新版本差异文本采集器，自动抓取 `main.js`、`app.asar` 与内置插件未译英文并生成带白名单规范的待译提示词。
+
+### Changed
+- **Automatic Duplicate-Translation Guard (`src/discovery.ts` & `src/controller.ts`)**：移除对自有深度汉化标记的错误 `legacyPatch` 拦截；当检测到 `app.asar` 已启用深度汉化时，GravityBox 自动切换为 `HUD-only` 避让模式，仅运行对话状态栏与配额/账号伴侣功能，彻底消除双引擎冲突。
+
 ## [1.1.4] - 2026-11-19
 
 ### Changed
@@ -184,7 +193,8 @@
 ### Fixed
 - **Native UI**：保持菜单栏状态图标在不同翻译开关状态下的不透明度一致（`b9921e8`，已包含于 1.0.0）。
 
-[Unreleased]: https://github.com/KAIKAIKAISER/gravitybox/compare/v1.1.4...HEAD
+[Unreleased]: https://github.com/KAIKAIKAISER/gravitybox/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/KAIKAIKAISER/gravitybox/compare/v1.1.4...v1.2.0
 [1.1.4]: https://github.com/KAIKAIKAISER/gravitybox/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/KAIKAIKAISER/gravitybox/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/KAIKAIKAISER/gravitybox/compare/v1.1.1...v1.1.2

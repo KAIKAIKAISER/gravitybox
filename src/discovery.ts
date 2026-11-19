@@ -136,7 +136,7 @@ export async function inspectBundle(appPath: string): Promise<{ version: string;
           const bytes = await archive.readEntryBuffer(entry, 3_000_000, 1);
           if (!bytes) continue;
           const text = bytes.toString();
-          legacyPatch ||= /ANTIGRAVITY CHINESE LOCALIZATION START|injectAntigravityI18n|__ANTIGRAVITY_I18N_DATA__|createI18nEngine|__ag_hanhua_engine__/.test(text);
+          legacyPatch ||= /injectAntigravityI18n|__ANTIGRAVITY_I18N_DATA__|createI18nEngine|__ag_hanhua_engine__/.test(text);
         }
         const asarStat = await fsStat(asarPath);
         const val = { version, legacyPatch };
@@ -213,7 +213,7 @@ export async function inspectBundle(appPath: string): Promise<{ version: string;
         const bytes = await archive.readEntryBuffer(entry, 3_000_000, 1);
         if (!bytes) continue;
         const text = bytes.toString();
-        legacyPatch ||= /ANTIGRAVITY CHINESE LOCALIZATION START|injectAntigravityI18n|__ANTIGRAVITY_I18N_DATA__|createI18nEngine|__ag_hanhua_engine__/.test(text);
+        legacyPatch ||= /injectAntigravityI18n|__ANTIGRAVITY_I18N_DATA__|createI18nEngine|__ag_hanhua_engine__/.test(text);
       }
       const asarStat = await fsStat(asarPath);
       const val = { version, legacyPatch };

@@ -27,6 +27,13 @@ import {
 } from './ipc-projections.js';
 export { normalizeSubscriptionTier, projectQuotaContract };
 import { CacheMaintenance } from './maintenance.js';
+import {
+  inspectDeepLocalizationStatus,
+  applyDeepAsarLocalization,
+  restoreOfficialAsar,
+  syncRemoteZhPack,
+  scanPendingForWorkflowA,
+} from './asar-patcher.js';
 import { mkdir, lstat, chmod, unlink, readFile, readdir, writeFile } from 'node:fs/promises';
 import { realpathSync, readFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
@@ -403,6 +410,7 @@ async function run() {
   const accountLogin = new GoogleAccountLogin((token, signal) => accountsManager.addAccountFromOAuth(token, signal));
   const homeDir = option('--home-dir', process.env.GRAVITYBOX_HOME_DIR || homedir())!;
   const appSupportDir = option('--app-support-dir', process.env.GRAVITYBOX_APP_SUPPORT_DIR || getDefaultAppSupportDir())!;
+  const assetsDir = resolve(fileURLToPath(new URL('../assets', import.meta.url)));
   const switchService = new AccountSwitchService(accountsManager, { stateDir, profile, channel });
   const usageManager = new UsageStatsManager({ stateDir, geminiDir });
   cacheMaintenance.setHooks({
@@ -995,8 +1003,20 @@ async function run() {
       }
       // 只读及自管理锁的配额刷新命令直接并发响应，不阻塞在全局写锁 commandChain 队列后
       const isReadOnlyAutoSwitch = command === 'auto_switch_best' && parsed.execute !== true;
-      if (['maintenance_scan', 'maintenance_history', 'account_recovery_info', 'auto_switch_get', 'usage_snapshot_release', 'usage_events', 'usage_summary', 'usage_ledger_review', 'api_pricing_get', 'pricing_sync_status', 'quota_refresh', 'quota_refresh_start'].includes(command) || isReadOnlyAutoSwitch) {
+      if (['maintenance_scan', 'maintenance_history', 'account_recovery_info', 'auto_switch_get', 'usage_snapshot_release', 'usage_events', 'usage_summary', 'usage_ledger_review', 'api_pricing_get', 'pricing_sync_status', 'quota_refresh', 'quota_refresh_start', 'asar_zh_status', 'asar_zh_scan_pending'].includes(command) || isReadOnlyAutoSwitch) {
         (async () => {
+          if (command === 'asar_zh_status') {
+            const deepStatus = await inspectDeepLocalizationStatus(appPath, stateDir, assetsDir);
+            reply({ ok: true, status: deepStatus });
+            return;
+          }
+          if (command === 'asar_zh_scan_pending') {
+            const scanRes = await scanPendingForWorkflowA(appPath, stateDir, assetsDir, {
+              devToolsPort: controller.getActivePort(),
+            });
+            reply(scanRes);
+            return;
+          }
           if (command === 'quota_refresh_start') {
             const taskId = tasks.begin('quota-refresh', bt('main.task.quota_refresh_title'), async (signal, progress, _commit) => {
               const result = await accountsManager.refreshAllQuotas(globalThis.fetch, {
@@ -1211,6 +1231,30 @@ async function run() {
               failures: result.failures,
               partial: (result.failures.length > 0 || accounts.some((account: any) => account?.refreshState?.complete === false)) && accounts.length > 0,
               staleAccounts: accounts.filter((account: any) => (account?.quota?.stale_groups?.length ?? 0) > 0).length });
+            return;
+          }
+          if (command === 'asar_zh_apply') {
+            const result = await applyDeepAsarLocalization(appPath, stateDir, assetsDir, {
+              devToolsPort: controller.getActivePort(),
+            });
+            await controller.refreshDeepAsarGuard(false);
+            const deepStatus = await inspectDeepLocalizationStatus(appPath, stateDir, assetsDir);
+            reply({ ok: result.ok, result, deepStatus, status: controller.snapshot() });
+            return;
+          }
+          if (command === 'asar_zh_restore') {
+            const result = await restoreOfficialAsar(appPath);
+            await controller.refreshDeepAsarGuard(false);
+            const deepStatus = await inspectDeepLocalizationStatus(appPath, stateDir, assetsDir);
+            reply({ ok: result.ok, message: result.message, deepStatus, status: controller.snapshot() });
+            return;
+          }
+          if (command === 'asar_zh_sync_remote') {
+            const syncRes = await syncRemoteZhPack(stateDir, {
+              repo: typeof parsed.repo === 'string' && parsed.repo.trim() ? parsed.repo.trim() : undefined,
+            });
+            const deepStatus = await inspectDeepLocalizationStatus(appPath, stateDir, assetsDir);
+            reply({ ok: syncRes.ok, via: syncRes.via, message: syncRes.message, deepStatus });
             return;
           }
           if (command === 'language_set') {

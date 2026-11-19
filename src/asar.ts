@@ -2,11 +2,19 @@ import { closeSync, openSync, readSync } from 'node:fs';
 import { open, type FileHandle } from 'node:fs/promises';
 import { bt } from './i18n.js';
 
+export interface AsarIntegrity {
+  algorithm: string;
+  hash: string;
+  blockSize: number;
+  blocks: string[];
+}
+
 export interface AsarFileEntry {
   size?: number | string;
   offset?: number | string;
   unpacked?: boolean;
   link?: string;
+  integrity?: AsarIntegrity;
   files?: Record<string, AsarFileEntry>;
 }
 

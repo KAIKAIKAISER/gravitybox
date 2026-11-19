@@ -1,4 +1,5 @@
 import { BundleCache } from './bundle-cache.js';
+import { hasAsarLocalizationTag } from './asar-patcher.js';
 import { CdpHudBridge, HUD_BRIDGE_BINDING_NAME } from './hud.js';
 import { scopedKey, describeContext, type PendingItem } from './candidates.js';
 import { readFile, mkdir } from 'node:fs/promises';
@@ -35,6 +36,7 @@ export type AssistantStatus = {
   dictionaryVersion: string; entries: number; dictionaryError?: string; errors: string[];
   rssMB: number; updatedAt: string; pid: number;
   translationEnabled?: boolean;
+  deepAsarActive?: boolean;
   hudEnabled?: boolean;
   unverifiedVersion?: boolean;
   newStringsCount?: number;
@@ -63,6 +65,7 @@ export class Controller {
   private targetTimer?: NodeJS.Timeout;
   private stopped = false;
   private paused = false;
+  private deepAsarActive = false;
   private locale = 'zh-Hans';
   private configuredLanguage = 'zh-Hans';
   private hasTargetDictionary = true;
@@ -130,20 +133,45 @@ export class Controller {
     this.locale = initialLocale;
     this.configuredLanguage = options.configuredLanguage ?? initialLocale;
     this.hasTargetDictionary = options.hasTargetDictionary ?? (initialLocale !== 'en');
-    this.paused = options.initiallyPaused === true || initialLocale === 'en' || !this.hasTargetDictionary;
+    this.deepAsarActive = !options.fixture && hasAsarLocalizationTag(options.appPath);
+    this.paused = options.initiallyPaused === true || initialLocale === 'en' || !this.hasTargetDictionary || this.deepAsarActive;
     this.hudEnabled = options.hudEnabled !== false;
     this.hudBridge = new CdpHudBridge({
       geminiDir: options.geminiDir || process.env.GRAVITYBOX_GEMINI_DIR || process.env.GEMINI_DIR,
       stateDir: options.stateDir,
     });
     const effectiveLocale = this.effectiveStatusLocale();
-    this.status = { schema: 1, mode: 'starting', message: this.t('status.starting'), windows: 0, dictionaryVersion: options.dictionary.version, entries: Object.keys(options.dictionary.entries).length, errors: [], rssMB: 0, updatedAt: '', pid: process.pid, menuHooked: false, translationEnabled: !this.paused, hudEnabled: this.hudEnabled, locale: effectiveLocale, configuredLanguage: this.configuredLanguage };
+    this.status = { schema: 1, mode: 'starting', message: this.t('status.starting'), windows: 0, dictionaryVersion: options.dictionary.version, entries: Object.keys(options.dictionary.entries).length, errors: [], rssMB: 0, updatedAt: '', pid: process.pid, menuHooked: false, translationEnabled: !this.paused, deepAsarActive: this.deepAsarActive, hudEnabled: this.hudEnabled, locale: effectiveLocale, configuredLanguage: this.configuredLanguage };
+  }
+  getActivePort(): number | undefined {
+    return this.endpoint?.port;
+  }
+  refreshDeepAsarGuard(resumeBuiltinIfRestored = false): Promise<void> {
+    return this.enqueueControl(async () => {
+      const hasDeep = !this.options.fixture && hasAsarLocalizationTag(this.activeAppPath());
+      this.deepAsarActive = hasDeep;
+      this.status.deepAsarActive = hasDeep;
+      if (hasDeep) {
+        this.paused = true;
+        this.bootCache.clear();
+        await this.transitionActiveSessionsToHudOnly();
+        if (this.hudEnabled) {
+          await this.resumeHudOnly();
+        }
+        this.publish('paused', this.t('status.paused'));
+      } else if (resumeBuiltinIfRestored && this.locale !== 'en' && this.hasTargetDictionary) {
+        await this.resumeInternal();
+      } else {
+        this.publish();
+      }
+    });
   }
   private publish(mode?: string, message?: string) {
     if (mode) this.status.mode = mode;
     if (message) this.status.message = message;
     const effectiveLocale = this.effectiveStatusLocale();
     this.status.translationEnabled = !this.paused;
+    this.status.deepAsarActive = this.deepAsarActive;
     this.status.hudEnabled = this.hudEnabled;
     this.status.locale = effectiveLocale;
     this.status.configuredLanguage = this.configuredLanguage;
@@ -248,6 +276,14 @@ export class Controller {
       this.status.dictionaryBaseVersion = [...SUPPORTED_BUNDLES.keys()].filter(v=>compareLayers(v+'.json',this.endpoint!.appVersion+'.json')<=0).sort((a,b)=>compareLayers(a+'.json',b+'.json')).at(-1)??'base';
       if (!this.options.fixture) {
         const activeApp = this.activeAppPath();
+        const hasDeep = hasAsarLocalizationTag(activeApp);
+        if (hasDeep !== this.deepAsarActive) {
+          this.deepAsarActive = hasDeep;
+          if (hasDeep && !this.paused) {
+            this.paused = true;
+            this.bootCache.clear();
+          }
+        }
         const targets = await (await fetch(`http://127.0.0.1:${this.endpoint.port}/json/list`, { signal: AbortSignal.timeout(2000), redirect: 'error' })).json() as {type: string; url: string}[];
         const target = targets.find(t => allowedTarget(t));
         if (!target || !await this.checkPageService(target.url, activeApp)) { this.publish('waiting-window', this.t('status.waiting_window')); this.retry(); return; }
@@ -633,6 +669,16 @@ export class Controller {
   pause(): Promise<void> {
     return this.enqueueControl(async () => {
       const prevHudLocale = this.effectiveHudLocale();
+    if (!this.options.fixture && hasAsarLocalizationTag(this.activeAppPath())) {
+      this.deepAsarActive = true;
+      this.paused = true;
+      this.bootCache.clear();
+      await this.transitionActiveSessionsToHudOnly();
+      if (this.hudEnabled) await this.resumeHudOnly();
+      this.publish('paused', this.t('status.paused'));
+      return;
+    }
+    this.deepAsarActive = false;
       this.paused = true;
       this.status.errors = [];
       this.bootCache.clear();
@@ -657,6 +703,16 @@ export class Controller {
   }
   private async resumeInternal() {
     const prevHudLocale = this.effectiveHudLocale();
+    if (!this.options.fixture && hasAsarLocalizationTag(this.activeAppPath())) {
+      this.deepAsarActive = true;
+      this.paused = true;
+      this.bootCache.clear();
+      await this.transitionActiveSessionsToHudOnly();
+      if (this.hudEnabled) await this.resumeHudOnly();
+      this.publish('paused', this.t('status.paused'));
+      return;
+    }
+    this.deepAsarActive = false;
     // Recreate the isolated runtime so translation starts from the chosen mode.
     if (this.locale === 'en') {
       this.locale = 'zh-Hans';

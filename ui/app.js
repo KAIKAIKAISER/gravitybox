@@ -30,6 +30,8 @@ const state = {
   usageAccountId: 'all',
   usageReport: null,
   maintenanceSummary: null,
+  deepLocalization: null,
+  pendingScanResult: null,
   updateState: null,
   collapsedAccounts: new Set(),
   allCollapsed: false,
@@ -56,6 +58,12 @@ const NAV_ITEMS = [
     key: 'nav.usage',
     fallback: '用量',
     icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>`,
+  },
+  {
+    id: 'localization',
+    key: 'nav.localization',
+    fallback: '深度汉化',
+    icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg>`,
   },
   {
     id: 'settings',
@@ -126,6 +134,9 @@ function renderSidebar() {
   if (!s) {
     dot.className = 'status-dot';
     txt.textContent = t('sidebar.waiting_service', null, '等待本机服务…');
+  } else if (s.deepAsarActive && s.hudEnabled !== false) {
+    dot.className = 'status-dot connected';
+    txt.textContent = t('sidebar.deep_asar_active', null, '深度汉化已接管 · HUD 运行中');
   } else {
     const mode = s.mode || '';
     dot.className = `status-dot ${
@@ -925,14 +936,17 @@ function renderSettingsPage(root) {
           <div class="setting-icon">🌐</div>
           <div>
             <div class="setting-title">${escapeHtml(t('settings.language.title', null, '显示语言'))}</div>
-            <div class="setting-sub">${escapeHtml(t('settings.language.subtitle', null, '同时决定 GravityBox 与 Antigravity 的界面语言，不改动官方应用'))}</div>
+            <div class="setting-sub">${escapeHtml(state.statusPayload?.status?.deepAsarActive ? t('localization.guard_active', null, '已自动接管 · GravityBox 仅运行 HUD 增强，不重复改写界面') : t('settings.language.subtitle', null, '同时决定 GravityBox 与 Antigravity 的界面语言，不改动官方应用'))}</div>
           </div>
         </div>
-        <select id="set-language">
+        <div style="display:flex;align-items:center;gap:8px">
+          ${state.statusPayload?.status?.deepAsarActive ? `<button class="btn btn-sm" id="btn-goto-deep-loc">${escapeHtml(t('nav.localization', null, '深度汉化'))}</button>` : ''}
+          <select id="set-language">
           <option value="system" ${cfg.appLanguage === 'system' ? 'selected' : ''}>${escapeHtml(t('language.system', null, '跟随系统'))}</option>
           <option value="zh-Hans" ${cfg.appLanguage === 'zh-Hans' ? 'selected' : ''}>简体中文</option>
           <option value="en" ${cfg.appLanguage === 'en' ? 'selected' : ''}>English</option>
-        </select>
+          </select>
+        </div>
       </div>
       <div class="row-divider"></div>
       <div class="setting-row">
@@ -1033,6 +1047,13 @@ function renderSettingsPage(root) {
       </div>
     </div>
   `;
+
+  document.getElementById('btn-goto-deep-loc')?.addEventListener('click', () => {
+    state.activeTab = 'localization';
+    renderSidebar();
+    renderCurrentPage();
+    void refreshActiveTabData();
+  });
 
   document.getElementById('set-language')?.addEventListener('change', async e => {
     const language = e.target.value;
@@ -1261,12 +1282,194 @@ function renderAboutPage(root) {
   });
 }
 
+function renderLocalizationPage(root) {
+  const ds = state.deepLocalization;
+  const scan = state.pendingScanResult;
+  const isBusyApply = Boolean(state.busy.asarApply);
+  const isBusySync = Boolean(state.busy.asarSync);
+  const isBusyScan = Boolean(state.busy.asarScan);
+
+  const patchPill = ds?.isPatched
+    ? `<span class="pill pill-green">${escapeHtml(t('localization.asar_patched', null, '已启用深度汉化'))}</span>${ds.needsReapply ? ` <span class="pill pill-amber">${escapeHtml(t('localization.needs_reapply', null, '（有更新可重新应用）'))}</span>` : ''}`
+    : `<span class="pill">${escapeHtml(t('localization.asar_official', null, '官方纯净原版'))}</span>`;
+
+  const guardText = ds?.conflictGuardActive
+    ? t('localization.guard_active', null, '已自动接管 · GravityBox 仅运行 HUD 增强，不重复改写界面')
+    : t('localization.guard_standby', null, '未检测到 ASAR 汉化 · 点击下方一键安装即可全面接管');
+
+  const sourceLabel = ds?.zhPackSource === 'remote-synced'
+    ? t('localization.pack_source_remote', null, '云端同步版本')
+    : t('localization.pack_source_bundled', null, '内置离线基线');
+
+  root.innerHTML = `
+    <div class="page-header">
+      <div>
+        <h1 class="page-title">${escapeHtml(t('localization.title', null, 'Antigravity 深度汉化'))}</h1>
+        <div class="muted small" style="margin-top:4px">${escapeHtml(t('localization.subtitle', null, '由你的自有汉化引擎与白名单词库全权接管，自动避让 GravityBox 重复注入'))}</div>
+      </div>
+    </div>
+
+    <div class="section-label">${escapeHtml(t('localization.section.status', null, '当前汉化与防冲突状态'))}</div>
+    <div class="card">
+      <div class="setting-row">
+        <span style="font-weight:600">${escapeHtml(t('localization.app_version', null, '客户端版本'))}</span>
+        <span class="small mono">${escapeHtml(ds?.appFound ? `Antigravity v${ds.appVersion || 'unknown'}` : t('common.unavailable', null, '未检测到安装目录'))}</span>
+      </div>
+      <div class="row-divider"></div>
+      <div class="setting-row">
+        <span style="font-weight:600">${escapeHtml(t('localization.asar_status', null, 'ASAR 补丁状态'))}</span>
+        <div>${ds ? patchPill : `<span class="muted small">加载中…</span>`}</div>
+      </div>
+      <div class="row-divider"></div>
+      <div class="setting-row">
+        <span style="font-weight:600">${escapeHtml(t('localization.backup_status', null, '官方原版备份'))}</span>
+        <span class="small">${escapeHtml(ds?.hasBackup ? t('localization.backup_ready', null, '已安全备份 (app.asar.bak)') : t('localization.backup_missing', null, '尚未创建（应用时自动备份）'))}</span>
+      </div>
+      <div class="row-divider"></div>
+      <div class="setting-row">
+        <div style="min-width:0">
+          <div style="font-weight:600">${escapeHtml(t('localization.guard_title', null, '重复冲突防护'))}</div>
+          <div class="setting-sub">${escapeHtml(guardText)}</div>
+        </div>
+      </div>
+      <div class="row-divider"></div>
+      <div class="setting-row" style="justify-content:flex-end;gap:10px">
+        ${ds?.hasBackup ? `<button class="btn btn-sm" id="btn-asar-restore" ${isBusyApply ? 'disabled' : ''}>${escapeHtml(t('localization.btn.restore', null, '恢复官方原版'))}</button>` : ''}
+        <button class="btn btn-primary btn-sm" id="btn-asar-apply" ${isBusyApply || !ds?.appFound ? 'disabled' : ''}>
+          ${escapeHtml(isBusyApply ? t('localization.btn.applying', null, '正在校验并注入…') : t('localization.btn.apply', null, '一键应用深度汉化并热生效'))}
+        </button>
+      </div>
+    </div>
+
+    <div class="section-label">${escapeHtml(t('localization.section.cloud', null, '云端词库同步（途径 A 上游）'))}</div>
+    <div class="card">
+      <div class="setting-row">
+        <div style="min-width:0">
+          <div style="font-weight:600">${escapeHtml(ds ? `${sourceLabel} · v${ds.zhPackVersion} (${formatNumber(ds.zhPackEntriesCount)} 条)` : '—')}</div>
+          <div class="setting-sub mono xs">${escapeHtml(ds?.zhPackUpdatedAt ? `更新时间: ${formatTimestampShort(ds.zhPackUpdatedAt)} · 源: KAIKAIKAISER/antigravity-zh-asar` : 'KAIKAIKAISER/antigravity-zh-asar')}</div>
+        </div>
+        <button class="btn btn-sm" id="btn-asar-sync" ${isBusySync ? 'disabled' : ''}>
+          ${escapeHtml(isBusySync ? t('localization.btn.syncing', null, '正在同步…') : t('localization.btn.sync_remote', null, '从 GitHub 同步最新汉化包'))}
+        </button>
+      </div>
+    </div>
+
+    <div class="section-label">${escapeHtml(t('localization.section.pending', null, '新版本文本排查（途径 A 采集）'))}</div>
+    <div class="card">
+      <div class="setting-row">
+        <div style="min-width:0;padding-right:12px">
+          <div style="font-weight:600">自动差分扫描新版本未译英文</div>
+          <div class="setting-sub">${escapeHtml(t('localization.pending_desc', null, 'Antigravity 自动更新后，可一键扫描前端 main.js、app.asar 与内置插件中尚未覆盖的英文 UI 文本，复制发给 Antigravity 对话即可翻译发布。'))}</div>
+        </div>
+        <button class="btn btn-sm" id="btn-asar-scan" ${isBusyScan ? 'disabled' : ''} style="flex-shrink:0">
+          ${escapeHtml(isBusyScan ? t('localization.btn.scanning', null, '正在扫描…') : t('localization.btn.scan', null, '扫描当前版本新增文本'))}
+        </button>
+      </div>
+      ${scan ? `
+        <div class="row-divider"></div>
+        <div style="padding:12px 16px">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:8px;flex-wrap:wrap">
+            <span class="small" style="font-weight:600">v${escapeHtml(scan.appVersion)} 发现 ${scan.pendingCount} 条新增未译候选（已扫 ${escapeHtml((scan.scannedSources || []).join(' / '))}）</span>
+            <button class="btn btn-primary btn-sm" id="btn-asar-copy-prompt">${escapeHtml(t('localization.btn.copy_prompt', null, '复制待译提示词给 AI'))}</button>
+          </div>
+          ${scan.pendingFilePath ? `<div class="muted xs mono truncate" style="margin-bottom:8px">导出文件: ${escapeHtml(scan.pendingFilePath)}</div>` : ''}
+          ${scan.pendingCount > 0 ? `
+            <div style="max-height:180px;overflow-y:auto;background:var(--bg-subtle, rgba(0,0,0,0.04));border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.6">
+              ${scan.pending.slice(0, 40).map(item => `<div class="mono truncate">• ${escapeHtml(item)}</div>`).join('')}
+              ${scan.pendingCount > 40 ? `<div class="muted xs" style="margin-top:4px">… 其余 ${scan.pendingCount - 40} 条请复制提示词或查看导出 JSON</div>` : ''}
+            </div>
+          ` : `<div class="muted small">当前词库已完整覆盖扫描到的全部 UI 文案！</div>`}
+        </div>
+      ` : ''}
+    </div>
+  `;
+
+  document.getElementById('btn-asar-apply')?.addEventListener('click', async () => {
+    if (state.busy.asarApply) return;
+    state.busy.asarApply = true;
+    renderCurrentPage();
+    try {
+      const res = await window.gravitybox.rpc('asar_zh_apply');
+      if (res?.deepStatus) state.deepLocalization = res.deepStatus;
+      if (res?.status) state.statusPayload = { ...(state.statusPayload || {}), status: res.status };
+      renderSidebar();
+      toast(res?.result?.message || res?.error || '应用完成', !res?.ok);
+    } catch (err) {
+      toast(String(err?.message || err), true);
+    } finally {
+      state.busy.asarApply = false;
+      renderCurrentPage();
+    }
+  });
+
+  document.getElementById('btn-asar-restore')?.addEventListener('click', async () => {
+    if (state.busy.asarApply) return;
+    state.busy.asarApply = true;
+    renderCurrentPage();
+    try {
+      const res = await window.gravitybox.rpc('asar_zh_restore');
+      if (res?.deepStatus) state.deepLocalization = res.deepStatus;
+      if (res?.status) state.statusPayload = { ...(state.statusPayload || {}), status: res.status };
+      renderSidebar();
+      toast(res?.message || res?.error || '操作完成', !res?.ok);
+    } catch (err) {
+      toast(String(err?.message || err), true);
+    } finally {
+      state.busy.asarApply = false;
+      renderCurrentPage();
+    }
+  });
+
+  document.getElementById('btn-asar-sync')?.addEventListener('click', async () => {
+    if (state.busy.asarSync) return;
+    state.busy.asarSync = true;
+    renderCurrentPage();
+    try {
+      const res = await window.gravitybox.rpc('asar_zh_sync_remote');
+      if (res?.deepStatus) state.deepLocalization = res.deepStatus;
+      toast(res?.message || res?.error || '同步完成', !res?.ok);
+    } catch (err) {
+      toast(String(err?.message || err), true);
+    } finally {
+      state.busy.asarSync = false;
+      renderCurrentPage();
+    }
+  });
+
+  document.getElementById('btn-asar-scan')?.addEventListener('click', async () => {
+    if (state.busy.asarScan) return;
+    state.busy.asarScan = true;
+    renderCurrentPage();
+    try {
+      const res = await window.gravitybox.rpc('asar_zh_scan_pending');
+      if (res?.ok) {
+        state.pendingScanResult = res;
+        toast(`扫描完成：发现 ${res.pendingCount} 条新增未译候选`);
+      } else {
+        toast(res?.error || '扫描失败', true);
+      }
+    } catch (err) {
+      toast(String(err?.message || err), true);
+    } finally {
+      state.busy.asarScan = false;
+      renderCurrentPage();
+    }
+  });
+
+  document.getElementById('btn-asar-copy-prompt')?.addEventListener('click', async () => {
+    if (!state.pendingScanResult?.promptText) return;
+    await window.gravitybox.copyText(state.pendingScanResult.promptText);
+    toast('已复制带白名单规范的待译提示词，可直接粘贴到 Antigravity 对话');
+  });
+}
+
 function renderCurrentPage() {
   const root = document.getElementById('page-root');
   if (!root) return;
   if (state.activeTab === 'overview') renderOverviewPage(root);
   else if (state.activeTab === 'accounts') renderAccountsPage(root);
   else if (state.activeTab === 'usage') renderUsagePage(root);
+  else if (state.activeTab === 'localization') renderLocalizationPage(root);
   else if (state.activeTab === 'settings') renderSettingsPage(root);
   else if (state.activeTab === 'about') renderAboutPage(root);
 }
@@ -1318,10 +1521,19 @@ async function loadMaintenanceSummary() {
   }
 }
 
+async function loadDeepLocalization() {
+  const res = await window.gravitybox.rpc('asar_zh_status');
+  if (res?.ok && res.status) {
+    state.deepLocalization = res.status;
+    if (state.activeTab === 'localization') renderCurrentPage();
+  }
+}
+
 async function refreshActiveTabData() {
   if (state.activeTab === 'overview') await loadDashboard();
   else if (state.activeTab === 'accounts') await loadAccounts();
   else if (state.activeTab === 'usage') await loadUsage(false);
+  else if (state.activeTab === 'localization') await loadDeepLocalization();
   else if (state.activeTab === 'settings') await loadMaintenanceSummary();
 }
 
