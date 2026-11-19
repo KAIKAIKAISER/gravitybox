@@ -9,9 +9,10 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 
 function findMakensis() {
   const candidates = [
-    'makensis.exe',
     'C:\\Program Files (x86)\\NSIS\\makensis.exe',
     'C:\\Program Files\\NSIS\\makensis.exe',
+    'C:\\ProgramData\\chocolatey\\bin\\makensis.exe',
+    'makensis.exe',
   ];
   for (const cand of candidates) {
     if (cand === 'makensis.exe' || existsSync(cand)) {
