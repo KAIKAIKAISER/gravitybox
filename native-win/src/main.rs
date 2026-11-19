@@ -457,7 +457,7 @@ fn serve_custom_asset(resource_root: &Path, req: Request<Vec<u8>>) -> Response<C
     Response::builder()
         .status(404)
         .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-        .body(Cow::Borrowed(b"Not Found"))
+        .body(Cow::Borrowed(b"Not Found".as_slice()))
         .unwrap()
 }
 
@@ -560,8 +560,9 @@ fn handle_js_request(
     let cmd = msg.get("cmd").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let payload = msg.get("payload").cloned().unwrap_or_else(|| json!({}));
 
+    let proxy_res = proxy.clone();
     let resolve = move |ok: bool, val: Value| {
-        let _ = proxy.send_event(UserEvent::JsResolve {
+        let _ = proxy_res.send_event(UserEvent::JsResolve {
             target,
             req_id,
             ok,
