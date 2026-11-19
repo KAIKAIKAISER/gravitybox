@@ -49,7 +49,7 @@
 
 If you use Google **Antigravity** daily on macOS, you've probably hit a few blind spots: hitting rate limits without knowing whether your **5-hour rolling window** or **weekly cap** ran out, having zero visibility into live token burn or context compaction, juggling multiple Google accounts manually, or watching disk caches balloon over time.
 
-**GravityBox** (latest `GravityBox v1.1.2`) is a lightweight, native macOS companion built to solve all of these **without modifying a single byte of `/Applications/Antigravity.app`**:
+**GravityBox** (latest `GravityBox v1.1.4`) is a lightweight native companion built to solve all of these **without modifying a single byte of official Antigravity application files**:
 
 | Everyday Pain Point | What GravityBox Does for You |
 | :--- | :--- |

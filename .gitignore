@@ -12,6 +12,7 @@
 /node_modules/
 /dist/
 /build/
+/native-win/target/
 /.cache/
 .cache/test-chrome*
 /reports/

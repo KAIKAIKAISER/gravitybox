@@ -62,9 +62,9 @@ export function formatTimestampShort(epochSec) {
 
 export function modelIconPath(modelOrGroup) {
   const lower = String(modelOrGroup || '').toLowerCase();
-  if (lower.includes('claude')) return '../../assets/model-icons/claude.png';
-  if (lower.includes('gpt') || lower.includes('openai')) return '../../assets/model-icons/openai.png';
-  return '../../assets/model-icons/gemini.png';
+  if (lower.includes('claude')) return '../assets/model-icons/claude.png';
+  if (lower.includes('gpt') || lower.includes('openai')) return '../assets/model-icons/openai.png';
+  return '../assets/model-icons/gemini.png';
 }
 
 export function tierBadgeHtml(tier) {
@@ -163,7 +163,7 @@ export function renderQuotaRowsHtml(account, t) {
     const known = typeof pct === 'number' && Number.isFinite(pct);
     const clamped = known ? Math.max(0, Math.min(100, pct)) : 0;
     const stateCls = !known ? '' : clamped <= 10 ? 'low' : clamped <= 25 ? 'mid' : '';
-    const iconSrc = r.icon === 'claude' ? '../../assets/model-icons/claude.png' : '../../assets/model-icons/gemini.png';
+    const iconSrc = r.icon === 'claude' ? '../assets/model-icons/claude.png' : '../assets/model-icons/gemini.png';
     return `
       <div class="quota-item">
         <div class="quota-item-head">
@@ -192,6 +192,52 @@ export function renderQuotaRowsHtml(account, t) {
   `;
 }
 
+export function parseHourlyBucketIndex(rawHour) {
+  if (typeof rawHour === 'number' && Number.isFinite(rawHour)) {
+    const h = Math.floor(rawHour);
+    return h >= 0 && h <= 23 ? h : null;
+  }
+  const str = String(rawHour ?? '').trim();
+  const match = str.match(/(?:^|\s)(\d{1,2})(?::\d{2})?$/);
+  if (!match) return null;
+  const h = Number(match[1]);
+  return Number.isInteger(h) && h >= 0 && h <= 23 ? h : null;
+}
+
+export function normalizeTodayHourlyPoints(rawHourly, tickEvery = 4) {
+  const buckets = Array.from({ length: 24 }, (_, hour) => ({
+    hourNum: hour,
+    label: `${String(hour).padStart(2, '0')}时`,
+    shortLabel: hour % tickEvery === 0 || hour === 23 ? `${String(hour).padStart(2, '0')}时` : '',
+    tooltipLabel: `${String(hour).padStart(2, '0')}:00`,
+    tokens: 0,
+    requests: 0,
+  }));
+  if (Array.isArray(rawHourly)) {
+    for (const item of rawHourly) {
+      if (!item || typeof item !== 'object') continue;
+      const idx = parseHourlyBucketIndex(item.hour);
+      if (idx === null) continue;
+      buckets[idx].tokens += Number(item.total_tokens ?? item.totalTokens ?? item.tokens ?? 0) || 0;
+      buckets[idx].requests += Number(item.request_count ?? item.requestCount ?? item.requests ?? 0) || 0;
+    }
+  }
+  return buckets;
+}
+
+export function normalizeDailyTrends(rep) {
+  const raw = Array.isArray(rep?.dailyTrends)
+    ? rep.dailyTrends
+    : (Array.isArray(rep?.dailyBreakdown) ? rep.dailyBreakdown : []);
+  return raw.map(d => ({
+    label: String(d?.date ?? ''),
+    shortLabel: typeof d?.date === 'string' && d.date.length >= 10 ? d.date.slice(5) : String(d?.date ?? ''),
+    tooltipLabel: String(d?.date ?? ''),
+    tokens: Number(d?.total_tokens ?? d?.totalTokens ?? d?.tokens ?? 0) || 0,
+    requests: Number(d?.request_count ?? d?.requestCount ?? d?.requests ?? 0) || 0,
+  }));
+}
+
 export function renderBarChartSvg(container, points, { metric = 'tokens', height = 132 } = {}) {
   if (!container) return;
   if (!Array.isArray(points) || points.length === 0) {
@@ -199,7 +245,8 @@ export function renderBarChartSvg(container, points, { metric = 'tokens', height
     return;
   }
   const values = points.map(p => Number(metric === 'requests' ? (p.requests ?? p.requestCount ?? 0) : (p.tokens ?? p.totalTokens ?? 0)) || 0);
-  const maxVal = Math.max(1, ...values);
+  const actualMax = Math.max(0, ...values);
+  const maxVal = Math.max(1, actualMax);
   const w = Math.max(320, container.clientWidth || 380);
   const padL = 40;
   const padR = 8;
@@ -211,6 +258,7 @@ export function renderBarChartSvg(container, points, { metric = 'tokens', height
   const barW = Math.max(4, Math.min(20, step * 0.62));
 
   const formatY = v => (metric === 'requests' ? String(Math.round(v)) : formatTokens(v));
+  const midLabel = actualMax > 1 ? formatY(maxVal / 2) : '';
   const bars = points.map((p, i) => {
     const val = values[i];
     const barH = val > 0 ? Math.max(4, (val / maxVal) * plotH) : 3;
@@ -218,15 +266,16 @@ export function renderBarChartSvg(container, points, { metric = 'tokens', height
     const y = padT + plotH - barH;
     const opacity = val > 0 ? 1 : 0.14;
     const fill = val > 0 ? 'url(#gbBarGrad)' : 'currentColor';
-    const label = p.label ?? '';
     return `<rect class="gb-bar" data-idx="${i}" x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${barH.toFixed(1)}" rx="${Math.min(3.5, barW / 2).toFixed(1)}" fill="${fill}" opacity="${opacity}" style="cursor:pointer"></rect>`;
   }).join('');
 
   const labelStep = points.length > 16 ? 4 : points.length > 10 ? 2 : 1;
   const xLabels = points.map((p, i) => {
     if (i !== 0 && i !== points.length - 1 && i % labelStep !== 0) return '';
+    const text = p.shortLabel ?? p.label ?? '';
+    if (!text) return '';
     const x = padL + i * step + step / 2;
-    return `<text x="${x.toFixed(1)}" y="${height - 5}" text-anchor="middle" font-size="10" fill="var(--text-secondary)">${escapeHtml(p.shortLabel || p.label || '')}</text>`;
+    return `<text x="${x.toFixed(1)}" y="${height - 5}" text-anchor="middle" font-size="10" fill="var(--text-secondary)">${escapeHtml(text)}</text>`;
   }).join('');
 
   container.innerHTML = `
@@ -241,8 +290,8 @@ export function renderBarChartSvg(container, points, { metric = 'tokens', height
         <line x1="${padL}" y1="${padT}" x2="${w - padR}" y2="${padT}" stroke="var(--border-subtle)" stroke-dasharray="3 3"/>
         <line x1="${padL}" y1="${padT + plotH / 2}" x2="${w - padR}" y2="${padT + plotH / 2}" stroke="var(--border-subtle)" stroke-dasharray="3 3"/>
         <line x1="${padL}" y1="${padT + plotH}" x2="${w - padR}" y2="${padT + plotH}" stroke="var(--border-subtle)"/>
-        <text x="${padL - 5}" y="${padT + 4}" text-anchor="end" font-size="10" fill="var(--text-secondary)">${escapeHtml(formatY(maxVal))}</text>
-        <text x="${padL - 5}" y="${padT + plotH / 2 + 3}" text-anchor="end" font-size="10" fill="var(--text-secondary)">${escapeHtml(formatY(maxVal / 2))}</text>
+        <text x="${padL - 5}" y="${padT + 4}" text-anchor="end" font-size="10" fill="var(--text-secondary)">${escapeHtml(actualMax > 0 ? formatY(maxVal) : '0')}</text>
+        ${midLabel ? `<text x="${padL - 5}" y="${padT + plotH / 2 + 3}" text-anchor="end" font-size="10" fill="var(--text-secondary)">${escapeHtml(midLabel)}</text>` : ''}
         <text x="${padL - 5}" y="${padT + plotH + 3}" text-anchor="end" font-size="10" fill="var(--text-secondary)">0</text>
         ${bars}
         ${xLabels}

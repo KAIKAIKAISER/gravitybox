@@ -41,7 +41,7 @@ jobs:
         run: node tools/check-docs.mjs --source-only
 
   windows-build:
-    name: Windows Electron Build & Core Tests
+    name: Windows Rust + WebView2 Build & Core Tests
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
@@ -51,6 +51,19 @@ jobs:
         with:
           node-version: 22
           cache: 'npm'
+
+      - name: Cache Rust Build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            native-win/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('native-win/Cargo.toml', 'native-win/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
       - name: Install Dependencies
         run: npm ci
@@ -72,8 +85,6 @@ jobs:
             test/privacy-gate.test.mjs
 
       - name: Package Windows Installer & Portable ZIP
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: node tools/package-win.mjs --skip-build
 
       - name: Upload Windows Build Artifacts

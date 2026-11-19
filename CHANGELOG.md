@@ -6,6 +6,20 @@
 
 ## [Unreleased]
 
+## [1.1.4] - 2026-11-19
+
+### Changed
+- **Windows Lightweight Native Shell (Rust + Edge WebView2)**：将 Windows 桌面端外壳由 Electron 替换为纯 Rust（`tao` + `wry` 系统 Edge WebView2 + Win32 原生托盘）与精简独立 `node.exe` 核心后端，彻底移除 Electron/Chromium 打包体积与常驻内存开销；关闭主窗口最小化至系统托盘时自动释放 WebView2 视图内存，后台常驻仅保留极小系统托盘宿主与后端服务。
+
+### Fixed
+- **Overview KPIs & Hourly Usage Chart (`ui/app.js` / `ui/popover.js` / `ui/shared.js`)**：修正总览页与用量页、托盘浮窗读取后端 `estimatedUsd` / `allTimeEstimatedUsd` / `requestCount` / `totalRequestCount` / `summary` / `dailyTrends` 字段及 `{tokens}` / `{cost}` 国际化模板参数错位问题；重做 `todayHourly` 24 小时桶归一化与 Y 轴刻度去重，修复 `今日时段消耗` X 轴时间标签重叠与 Y 轴重复显示问题。
+- **Windows Safe Relaunch Antigravity**：重构 Windows 端「安全重启 Antigravity 以连接」流程（`WM_CLOSE` 优雅通知窗体退出、超时后清理残留子进程并释放文件锁，随后以 `--remote-debugging-port=0` 重开），并在界面刷新期间保持按钮加载与禁用状态反馈。
+
+## [1.1.3] - 2026-11-19
+
+### Added
+- **Windows Port & GitHub Actions Release Pipeline**：新增 Windows 平台适配层（`src/platform.ts`，支持 Windows Named Pipe IPC、`win32` 凭据管理器读取、Antigravity 路径与端口发现及 NSIS/ZIP 在线构建工作流）。
+
 ## [1.1.2] - 2026-11-19
 
 ### Added
@@ -170,8 +184,10 @@
 ### Fixed
 - **Native UI**：保持菜单栏状态图标在不同翻译开关状态下的不透明度一致（`b9921e8`，已包含于 1.0.0）。
 
-[Unreleased]: https://github.com/Enzoo404/gravitybox/compare/v1.1.2...HEAD
-[1.1.2]: https://github.com/Enzoo404/gravitybox/compare/v1.1.1...v1.1.2
+[Unreleased]: https://github.com/KAIKAIKAISER/gravitybox/compare/v1.1.4...HEAD
+[1.1.4]: https://github.com/KAIKAIKAISER/gravitybox/compare/v1.1.3...v1.1.4
+[1.1.3]: https://github.com/KAIKAIKAISER/gravitybox/compare/v1.1.2...v1.1.3
+[1.1.2]: https://github.com/KAIKAIKAISER/gravitybox/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/Enzoo404/gravitybox/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/Enzoo404/gravitybox/compare/v1.0.5...v1.1.0
 [1.0.5]: https://github.com/Enzoo404/gravitybox/compare/v1.0.4...v1.0.5

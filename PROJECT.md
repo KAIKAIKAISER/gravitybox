@@ -1,9 +1,10 @@
 # GravityBox 工程架构总览
 
 ## 核心定位
-GravityBox (`1.1.2`) 是面向 macOS 14+ (Apple Silicon `arm64`) 的轻量级 Google Antigravity 正式版伴侣工具箱，提供**原生 AppKit / Node 后端 / HUD 全链路中英双语界面（跟随系统 / 简体中文 / English）**、零侵入式 IDE 双语热适配、输入框实时会话遥测 HUD、双周期配额监控、多账号四阶段原子切换、只读 SQLite 用量与时序计费核算及非破坏性缓存维护。
+GravityBox (`1.1.4`) 是面向 Windows 10/11 (`x64`) 与 macOS 14+ (`arm64`) 的轻量级 Google Antigravity 正式版伴侣工具箱，提供**原生桌面外壳（Windows Rust + WebView2 / macOS AppKit）/ Node 后端 / HUD 全链路中英双语界面（跟随系统 / 简体中文 / English）**、零侵入式 IDE 双语热适配、输入框实时会话遥测 HUD、双周期配额监控、多账号四阶段原子切换、只读 SQLite 用量与时序计费核算及非破坏性缓存维护。
 
 ## 目录与模块分工
+- `native-win/` & `ui/`：Windows 轻量级原生 Rust 外壳（Win32 系统托盘、Edge WebView2 主控制台与浮窗、IPC 守护与自更新）
 - `native/`：macOS 原生 AppKit 前端（常驻菜单栏面板、5 页主控制台 `Overview / Accounts / Usage / Settings / About`、`L10n.swift` 本地化运行时、进程守护与自更新校验）
 - `src/`：Node 22 / TypeScript 核心后端（CDP 注入控制、应用级双语引擎 `i18n.ts`、账号切换事务、双周期配额聚合、`sqlite-worker` 只读投影、时序计费与重估、`metrics-engine` HUD 引擎、IPC 服务）
 - `runtime/`：注入 Isolated World 的零侵入 DOM 观察引擎（`engine.js`）与双语会话遥测 HUD 实例（`hud-i18n.js` / `hud-instance.js` / `hud-popover.js` / `hud-styles.js`）

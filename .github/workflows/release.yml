@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to publish (e.g. v1.1.2). Defaults to package.json version if empty.'
+        description: 'Release tag to publish (e.g. v1.1.4). Defaults to package.json version if empty.'
         required: false
         type: string
 
@@ -25,7 +25,6 @@ jobs:
     timeout-minutes: 30
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -37,6 +36,19 @@ jobs:
         with:
           node-version: 22
           cache: 'npm'
+
+      - name: Cache Rust Build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            native-win/target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('native-win/Cargo.toml', 'native-win/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
       - name: Resolve Release Tag
         id: meta
@@ -100,4 +112,4 @@ jobs:
             成品/*.zip
             成品/*.sha256
             成品/release-manifest.json
-          retention-days: 14
+          retention-days: 30

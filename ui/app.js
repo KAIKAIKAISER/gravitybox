@@ -7,6 +7,8 @@ import {
   formatTokens,
   formatUsd,
   modelIconPath,
+  normalizeDailyTrends,
+  normalizeTodayHourlyPoints,
   renderBarChartSvg,
   renderDonutSvg,
   renderQuotaRowsHtml,
@@ -141,25 +143,48 @@ function renderSidebar() {
 function debugBannerHtml() {
   const s = state.statusPayload?.status;
   if (!s || s.mode !== 'debug-port-missing') return '';
+  const busy = Boolean(state.busy.safeRelaunch);
+  const btnText = busy
+    ? t('assistant.safe_relaunch_busy', null, '正在安全重启 Antigravity…')
+    : t('assistant.safe_relaunch_btn', null, '安全重启 Antigravity 以连接');
   return `
     <div class="banner banner-warn">
       <div>
         <div class="banner-title">${escapeHtml(t('status.debug_port_missing', null, '未开启调试端口'))}</div>
         <div class="banner-body">${escapeHtml(t('debug_port_missing.banner_body', null, '检测到 Antigravity 已运行但未开启调试端口，汉化与对话状态栏暂不可连接。请先保存工作后再安全重启。'))}</div>
       </div>
-      <button class="btn btn-primary btn-sm" id="btn-safe-relaunch">${escapeHtml(t('assistant.safe_relaunch_btn', null, '安全重启 Antigravity 以连接'))}</button>
+      <button class="btn btn-primary btn-sm" id="btn-safe-relaunch" ${busy ? 'disabled' : ''}>${escapeHtml(btnText)}</button>
     </div>
   `;
 }
 
 function bindDebugBanner() {
-  document.getElementById('btn-safe-relaunch')?.addEventListener('click', async () => {
-    const btn = document.getElementById('btn-safe-relaunch');
+  const btn = document.getElementById('btn-safe-relaunch');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    if (state.busy.safeRelaunch) return;
+    state.busy.safeRelaunch = true;
     btn.disabled = true;
-    const res = await window.gravitybox.safeRelaunchAntigravity();
-    if (!res?.ok) toast(res?.error || t('assistant.action_incomplete'), true);
-    else toast(t('status.waiting_app', null, '等待 Antigravity'));
-    btn.disabled = false;
+    btn.textContent = t('assistant.safe_relaunch_busy', null, '正在安全重启 Antigravity…');
+    toast(t('assistant.safe_relaunch_busy', null, '正在关闭并重启 Antigravity…'));
+    try {
+      const res = await window.gravitybox.safeRelaunchAntigravity();
+      if (!res?.ok) {
+        toast(res?.error || t('assistant.safe_relaunch_timeout', null, '安全重启未完成，请手动关闭 Antigravity 后重开'), true);
+      } else {
+        toast(t('status.waiting_app', null, '已重启 Antigravity，正在连接调试端口…'));
+        setTimeout(() => { void refreshActiveTabData(); }, 1800);
+      }
+    } catch (err) {
+      toast(String(err?.message || err || '安全重启失败'), true);
+    } finally {
+      state.busy.safeRelaunch = false;
+      const curBtn = document.getElementById('btn-safe-relaunch');
+      if (curBtn) {
+        curBtn.disabled = false;
+        curBtn.textContent = t('assistant.safe_relaunch_btn', null, '安全重启 Antigravity 以连接');
+      }
+    }
   });
 }
 
@@ -171,16 +196,16 @@ function renderOverviewPage(root) {
   const activeName = acc.activeName || activeEmail || t('overview.no_account', null, '未检测到已保存账号');
   const activeTier = acc.activeTier || state.statusPayload?.status?.activeSubscriptionTier || 'FREE';
 
-  const hourly = Array.isArray(usage.todayHourly) ? usage.todayHourly : [];
-  const points = hourly.map(h => ({
-    label: `${String(h.hour).padStart(2, '0')}时`,
-    shortLabel: h.hour % 4 === 0 || h.hour === 23 ? `${String(h.hour).padStart(2, '0')}时` : '',
-    tooltipLabel: `${String(h.hour).padStart(2, '0')}:00`,
-    tokens: h.tokens || 0,
-  }));
-  const peak = hourly.reduce((best, cur) => ((cur.tokens || 0) > (best.tokens || 0) ? cur : best), { hour: 0, tokens: 0 });
+  const points = normalizeTodayHourlyPoints(usage.todayHourly, 4);
+  const peak = points.reduce((best, cur) => (cur.tokens > best.tokens ? cur : best), { hourNum: 0, tokens: 0 });
   const topModels = Array.isArray(usage.todayByModel) ? usage.todayByModel.slice(0, 3) : [];
   const totalTodayTokens = Math.max(1, topModels.reduce((s, m) => s + (m.totalTokens || 0), 0));
+  const todayTokensVal = usage.todayTokens ?? 0;
+  const totalTokensVal = usage.totalTokens ?? 0;
+  const todayUsdVal = usage.estimatedUsd ?? usage.todayUsd ?? 0;
+  const totalUsdVal = usage.allTimeEstimatedUsd ?? usage.totalUsd ?? 0;
+  const todayReqVal = usage.requestCount ?? usage.todayRequests ?? 0;
+  const totalReqVal = usage.totalRequestCount ?? usage.totalRequests ?? 0;
 
   root.innerHTML = `
     <div class="page-header">
@@ -205,18 +230,18 @@ function renderOverviewPage(root) {
     <div class="bento-3">
       <div class="card" style="margin-top:0">
         <div class="metric-title">${escapeHtml(t('overview.metric.today_tokens', null, '今日 Token 用量'))}</div>
-        <div class="metric-value tabular">${escapeHtml(formatTokens(usage.todayTokens ?? 0))}</div>
-        <div class="metric-sub tabular">${escapeHtml(t('overview.metric.total_tokens', { count: formatTokens(usage.totalTokens ?? 0) }, `累计 ${formatTokens(usage.totalTokens ?? 0)} Token`))}</div>
+        <div class="metric-value tabular">${escapeHtml(formatTokens(todayTokensVal))}</div>
+        <div class="metric-sub tabular">${escapeHtml(t('overview.metric.total_tokens', { tokens: formatTokens(totalTokensVal) }, `累计 ${formatTokens(totalTokensVal)} Token`))}</div>
       </div>
       <div class="card" style="margin-top:0">
         <div class="metric-title">${escapeHtml(t('overview.metric.today_cost', null, '今日费用估算'))}</div>
-        <div class="metric-value tabular">${escapeHtml(formatUsd(usage.todayUsd ?? 0))}</div>
-        <div class="metric-sub tabular">${escapeHtml(t('overview.metric.total_cost', { amount: formatUsd(usage.totalUsd ?? 0) }, `累计 ${formatUsd(usage.totalUsd ?? 0)}`))}</div>
+        <div class="metric-value tabular">${escapeHtml(formatUsd(todayUsdVal))}</div>
+        <div class="metric-sub tabular">${escapeHtml(t('overview.metric.total_cost', { cost: formatUsd(totalUsdVal) }, `累计 ${formatUsd(totalUsdVal)}`))}</div>
       </div>
       <div class="card" style="margin-top:0">
         <div class="metric-title">${escapeHtml(t('overview.metric.today_requests', null, '今日请求数'))}</div>
-        <div class="metric-value tabular">${escapeHtml(formatNumber(usage.todayRequests ?? 0))}</div>
-        <div class="metric-sub tabular">${escapeHtml(t('overview.metric.total_requests', { count: formatNumber(usage.totalRequests ?? 0) }, `累计 ${formatNumber(usage.totalRequests ?? 0)} 次`))}</div>
+        <div class="metric-value tabular">${escapeHtml(formatNumber(todayReqVal))}</div>
+        <div class="metric-sub tabular">${escapeHtml(t('overview.metric.total_requests', { count: formatNumber(totalReqVal) }, `累计 ${formatNumber(totalReqVal)} 次`))}</div>
       </div>
     </div>
 
@@ -224,7 +249,9 @@ function renderOverviewPage(root) {
       <div class="card" style="margin-top:0">
         <div class="account-head">
           <span style="font-weight:600">${escapeHtml(t('overview.trend.title', null, '今日时段消耗'))}</span>
-          <span class="pill pill-blue">${peak.tokens > 0 ? `${String(peak.hour).padStart(2, '0')}时 · ${formatTokens(peak.tokens)}` : t('overview.trend.24h_badge', null, '24 小时')}</span>
+          <span class="pill pill-blue">${escapeHtml(peak.tokens > 0
+            ? t('overview.trend.peak_badge', { label: `${String(peak.hourNum).padStart(2, '0')}时`, peak: formatTokens(peak.tokens) }, `峰值 ${String(peak.hourNum).padStart(2, '0')}时 · ${formatTokens(peak.tokens)}`)
+            : t('overview.trend.24h_badge', null, '24 小时分布'))}</span>
         </div>
         <div class="chart-wrap" id="overview-trend-chart"></div>
       </div>
@@ -639,12 +666,16 @@ function openPolicyModal() {
 
 function renderUsagePage(root) {
   const rep = state.usageReport || {};
+  const s = rep.summary || rep;
   const accounts = state.accountsPayload?.accounts || [];
   const models = Array.isArray(rep.byModel) ? rep.byModel : [];
-  const totalTokens = Number(rep.totalTokens ?? 0);
-  const totalUsd = Number(rep.totalEstimatedUsd ?? 0);
-  const requests = Number(rep.requestCount ?? 0);
-  const cacheRate = Number(rep.cacheHitRate ?? 0);
+  const totalTokens = Number(s.totalTokens ?? s.total_tokens ?? 0);
+  const inputTokens = Number(s.promptTokens ?? s.input_tokens ?? s.inputTokens ?? 0);
+  const cachedTokens = Number(s.cachedTokens ?? s.cached_tokens ?? 0);
+  const outputTokens = Number(s.candidatesTokens ?? s.output_tokens ?? s.outputTokens ?? 0);
+  const totalUsd = Number(s.estimatedUsd ?? s.estimated_usd ?? rep.totalEstimatedUsd ?? 0);
+  const requests = Number(s.requestCount ?? s.request_count ?? 0);
+  const cacheRate = Number(s.cacheHitRate ?? 0);
   const periods = [
     { id: 'today', label: t('usage.period.today', null, '今日') },
     { id: '7d', label: t('usage.period.7d', null, '近 7 天') },
@@ -653,18 +684,8 @@ function renderUsagePage(root) {
   ];
 
   const trendSrc = state.usagePeriod === 'today'
-    ? (rep.todayHourly || []).map(h => ({
-        label: `${String(h.hour).padStart(2, '0')}时`,
-        shortLabel: h.hour % 3 === 0 || h.hour === 23 ? `${String(h.hour).padStart(2, '0')}时` : '',
-        tooltipLabel: `${String(h.hour).padStart(2, '0')}:00`,
-        tokens: h.tokens || 0,
-      }))
-    : (rep.dailyBreakdown || []).map(d => ({
-        label: d.date,
-        shortLabel: d.date?.slice(5) || '',
-        tooltipLabel: d.date,
-        tokens: d.totalTokens || 0,
-      }));
+    ? normalizeTodayHourlyPoints(rep.todayHourly, 3)
+    : normalizeDailyTrends(rep);
 
   const pricedModels = models.filter(m => (m.estimatedUsd || 0) > 0).slice(0, 5);
   const donutSlices = pricedModels.map(m => ({ label: m.model, value: m.estimatedUsd || 0 }));
@@ -690,7 +711,7 @@ function renderUsagePage(root) {
         <div>
           <div class="muted xs">${escapeHtml(t('usage.section.token_usage', null, 'Token 用量'))}</div>
           <div class="metric-value tabular" style="font-size:30px;margin:2px 0">${escapeHtml(formatTokens(totalTokens))}</div>
-          <div class="muted xs tabular">输入 ${formatTokens(rep.inputTokens)} · 缓存读取 ${formatTokens(rep.cachedTokens)} · 输出 ${formatTokens(rep.outputTokens)}</div>
+          <div class="muted xs tabular">输入 ${formatTokens(inputTokens)} · 缓存读取 ${formatTokens(cachedTokens)} · 输出 ${formatTokens(outputTokens)}</div>
         </div>
         <span class="pill">${escapeHtml(periods.find(p => p.id === state.usagePeriod)?.label || '')}</span>
       </div>
@@ -746,7 +767,7 @@ function renderUsagePage(root) {
           <div class="setting-row">
             <div>
               <div class="setting-title">${escapeHtml(t('usage.cache.hit_rate', null, '缓存命中率'))}</div>
-              <div class="setting-sub tabular">读取 ${formatTokens(rep.cachedTokens)} Token</div>
+              <div class="setting-sub tabular">读取 ${formatTokens(cachedTokens)} Token</div>
             </div>
             <div class="tabular" style="font-size:22px;font-weight:700">${cacheRate.toFixed(1)}%</div>
           </div>
@@ -1313,6 +1334,9 @@ async function bootstrap() {
   state.appInfo = initial.appInfo || {};
   state.statusPayload = initial.status || null;
   state.updateState = initial.updateState || null;
+  if (initial.initialTab && NAV_ITEMS.some(n => n.id === initial.initialTab)) {
+    state.activeTab = initial.initialTab;
+  }
 
   renderSidebar();
   renderCurrentPage();
@@ -1324,6 +1348,11 @@ async function bootstrap() {
   window.gravitybox.onStatus(payload => {
     state.statusPayload = payload;
     renderSidebar();
+    if (state.activeTab === 'overview' || state.activeTab === 'accounts') {
+      const hasBanner = Boolean(document.getElementById('btn-safe-relaunch'));
+      const needsBanner = payload?.status?.mode === 'debug-port-missing';
+      if (hasBanner !== needsBanner) renderCurrentPage();
+    }
   });
   window.gravitybox.onConfig(cfg => {
     state.config = cfg;

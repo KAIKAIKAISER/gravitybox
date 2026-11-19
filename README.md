@@ -49,7 +49,7 @@
 
 如果你日常在 Mac 上使用 Google **Antigravity** 写代码，大概率遇到过这些烦恼：全英文界面不够顺手、聊着聊着突然限流却分不清是 5 小时还是周额度用完了、完全不知道当前对话烧了多少 Token 或上下文快满了没、切换多个 Google 账号既麻烦又怕把本地状态搞坏。
 
-**GravityBox**（当前版本 `GravityBox v1.1.2`）就是为了解决这些问题而生的**轻量级原生桌面伴侣**。它不修改 `/Applications/Antigravity.app` 里的任何一行官方文件，打开即用：
+**GravityBox**（当前版本 `GravityBox v1.1.4`）就是为了解决这些问题而生的**轻量级原生桌面伴侣**。它不修改 Antigravity 里的任何一行官方文件，打开即用：
 
 | 日常痛点 | GravityBox 帮你做什么 |
 | :--- | :--- |

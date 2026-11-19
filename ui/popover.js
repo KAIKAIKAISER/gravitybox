@@ -5,6 +5,8 @@ import {
   formatTokens,
   formatUsd,
   modelIconPath,
+  normalizeDailyTrends,
+  normalizeTodayHourlyPoints,
   renderBarChartSvg,
   renderQuotaRowsHtml,
   tierBadgeHtml,
@@ -46,20 +48,29 @@ function renderTabs() {
 function debugBanner() {
   const s = state.statusPayload?.status;
   if (!s || s.mode !== 'debug-port-missing') return '';
+  const busy = Boolean(state.relaunchBusy);
+  const label = busy
+    ? t('assistant.safe_relaunch_busy', null, '正在安全重启 Antigravity…')
+    : t('assistant.safe_relaunch_btn', null, '安全重启 Antigravity 以连接');
   return `
     <div class="banner banner-warn" style="padding:9px 11px;margin-bottom:10px;flex-direction:column;align-items:flex-start;gap:6px">
       <div class="banner-title">${escapeHtml(t('status.debug_port_missing', null, '未开启调试端口'))}</div>
       <div class="banner-body">${escapeHtml(t('debug_port_missing.banner_body', null, '检测到 Antigravity 已运行但未开启调试端口。'))}</div>
-      <button class="btn btn-primary btn-sm" id="pop-safe-relaunch">${escapeHtml(t('assistant.safe_relaunch_btn', null, '安全重启 Antigravity 以连接'))}</button>
+      <button class="btn btn-primary btn-sm" id="pop-safe-relaunch" ${busy ? 'disabled' : ''}>${escapeHtml(label)}</button>
     </div>
   `;
 }
 
 function renderUsageTab(root) {
   const rep = state.usageReport || {};
+  const s = rep.summary || rep;
   const models = Array.isArray(rep.byModel) ? rep.byModel : [];
   const visibleModels = state.showAllModels ? models : models.slice(0, 3);
   const maxTokens = Math.max(1, ...models.map(m => m.totalTokens || 0));
+  const totalTokens = Number(s.totalTokens ?? s.total_tokens ?? 0);
+  const requestCount = Number(s.requestCount ?? s.request_count ?? 0);
+  const estimatedUsd = Number(s.estimatedUsd ?? s.estimated_usd ?? rep.totalEstimatedUsd ?? 0);
+  const cacheHitRate = Number(s.cacheHitRate ?? 0);
   const periods = [
     { id: 'today', label: t('menu_panel.period.today', null, '今日') },
     { id: '7d', label: t('menu_panel.period.7d', null, '近 7 天') },
@@ -68,20 +79,8 @@ function renderUsageTab(root) {
   ];
 
   const trendSrc = state.period === 'today'
-    ? (rep.todayHourly || []).map(h => ({
-        label: `${String(h.hour).padStart(2, '0')}时`,
-        shortLabel: h.hour % 6 === 0 || h.hour === 23 ? `${String(h.hour).padStart(2, '0')}时` : '',
-        tooltipLabel: `${String(h.hour).padStart(2, '0')}:00`,
-        tokens: h.tokens || 0,
-        requests: h.requests || 0,
-      }))
-    : (rep.dailyBreakdown || []).map(d => ({
-        label: d.date,
-        shortLabel: d.date?.slice(5) || '',
-        tooltipLabel: d.date,
-        tokens: d.totalTokens || 0,
-        requests: d.requestCount || 0,
-      }));
+    ? normalizeTodayHourlyPoints(rep.todayHourly, 6)
+    : normalizeDailyTrends(rep);
 
   root.innerHTML = `
     ${debugBanner()}
@@ -91,19 +90,19 @@ function renderUsageTab(root) {
     <div class="tile-grid-2">
       <div class="mini-tile">
         <div class="mini-tile-label">${escapeHtml(t('menu_panel.tile.tokens', null, 'Token 用量'))}</div>
-        <div class="mini-tile-val tabular">${escapeHtml(formatTokens(rep.totalTokens ?? 0))}</div>
+        <div class="mini-tile-val tabular">${escapeHtml(formatTokens(totalTokens))}</div>
       </div>
       <div class="mini-tile">
         <div class="mini-tile-label">${escapeHtml(t('menu_panel.tile.requests', null, '请求数'))}</div>
-        <div class="mini-tile-val tabular">${escapeHtml(formatNumber(rep.requestCount ?? 0))}</div>
+        <div class="mini-tile-val tabular">${escapeHtml(formatNumber(requestCount))}</div>
       </div>
       <div class="mini-tile">
         <div class="mini-tile-label">${escapeHtml(t('menu_panel.tile.cost', null, 'API 费用估算'))}</div>
-        <div class="mini-tile-val tabular">${escapeHtml(formatUsd(rep.totalEstimatedUsd ?? 0))}</div>
+        <div class="mini-tile-val tabular">${escapeHtml(formatUsd(estimatedUsd))}</div>
       </div>
       <div class="mini-tile">
         <div class="mini-tile-label">${escapeHtml(t('menu_panel.tile.cache', null, '缓存命中率'))}</div>
-        <div class="mini-tile-val tabular">${Number(rep.cacheHitRate ?? 0).toFixed(1)}%</div>
+        <div class="mini-tile-val tabular">${cacheHitRate.toFixed(1)}%</div>
       </div>
     </div>
 
@@ -251,8 +250,20 @@ function renderBody() {
   else if (state.tab === 'quota') renderQuotaTab(root);
   else renderAccountsTab(root);
 
-  document.getElementById('pop-safe-relaunch')?.addEventListener('click', () => {
-    void window.gravitybox.safeRelaunchAntigravity();
+  document.getElementById('pop-safe-relaunch')?.addEventListener('click', async () => {
+    if (state.relaunchBusy) return;
+    state.relaunchBusy = true;
+    const btn = document.getElementById('pop-safe-relaunch');
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = t('assistant.safe_relaunch_busy', null, '正在安全重启 Antigravity…');
+    }
+    try {
+      await window.gravitybox.safeRelaunchAntigravity();
+    } finally {
+      state.relaunchBusy = false;
+      renderBody();
+    }
   });
 }
 

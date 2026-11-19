@@ -92,8 +92,7 @@ html, body {
 }
 
 .drag-strip {
-  height: 22px;
-  -webkit-app-region: drag;
+  height: 4px;
   flex-shrink: 0;
 }
 
@@ -199,12 +198,7 @@ html, body {
 }
 
 .top-drag-bar {
-  height: 36px;
-  -webkit-app-region: drag;
-  display: flex;
-  align-items: center;
-  padding: 0 24px;
-  padding-right: 148px;
+  height: 14px;
   flex-shrink: 0;
 }
 
