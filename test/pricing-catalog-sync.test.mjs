@@ -24,6 +24,7 @@ import {
 } from '../dist/model-catalog.js';
 import { UsageStatsManager, resolveDatabaseModelFullName } from '../dist/usage.js';
 import { AccountsManager } from '../dist/accounts.js';
+import { getIpcEndpoint } from '../dist/platform.js';
 import {
   readInstalledAppBundleVersion,
   readValidLiveIdeModelsSnapshot,
@@ -34,7 +35,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function rpc(directory, payload, timeoutMs = 8000) {
   return new Promise((resolve, reject) => {
-    const socket = createConnection(join(directory, 'control.sock'));
+    const socket = createConnection(getIpcEndpoint(directory));
     let value = '';
     const timer = setTimeout(() => {
       socket.destroy();

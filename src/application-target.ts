@@ -3,6 +3,14 @@ import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { openAsarSync } from './asar.js';
 import { bt } from './i18n.js';
+import {
+  IS_WINDOWS,
+  getAppAsarPath,
+  getDefaultAppSupportDir,
+  getDefaultApplicationsDir,
+  getLanguageServerPath,
+  pathStartsWith,
+} from './platform.js';
 
 export type ApplicationChannel = 'stable';
 export type ApplicationArchitecture = 'legacy-hub' | 'wcv-hub';
@@ -45,7 +53,7 @@ export function probeBundleCapabilities(
     supportsAccountSwitch: true,
   };
 
-  const asarPath = join(appPath, 'Contents', 'Resources', 'app.asar');
+  const asarPath = getAppAsarPath(appPath);
   let archive: ReturnType<typeof openAsarSync> | undefined;
   try {
     if (!existsSync(asarPath)) return fallback;
@@ -106,13 +114,46 @@ function assertStablePaths(appPath: string, profile?: string): void {
   }
 }
 
+function resolveDefaultWindowsAppPath(home = homedir(), applicationsDir?: string): string {
+  const candidates = applicationsDir
+    ? [
+        join(applicationsDir, 'Antigravity'),
+        join(applicationsDir, 'antigravity'),
+        join(applicationsDir, 'Antigravity.app'),
+      ]
+    : [
+        join(process.env.LOCALAPPDATA || join(home, 'AppData', 'Local'), 'Programs', 'antigravity'),
+        join(process.env.LOCALAPPDATA || join(home, 'AppData', 'Local'), 'Programs', 'Antigravity'),
+        join(process.env.ProgramFiles || 'C:\\Program Files', 'Antigravity'),
+        join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Antigravity'),
+      ];
+  for (const dir of candidates) {
+    if (existsSync(join(dir, 'Antigravity.exe')) || existsSync(join(dir, 'Contents', 'MacOS', 'Antigravity'))) {
+      return dir;
+    }
+  }
+  return candidates[0]!;
+}
+
 export function detectInstalledChannels(
   preferredChannel: ApplicationChannel = 'stable',
-  applicationsDir = '/Applications',
+  applicationsDir?: string,
 ): InstalledChannelsInfo {
   applicationChannel(preferredChannel);
+  let installed = false;
+  if (applicationsDir) {
+    installed =
+      existsSync(join(applicationsDir, 'Antigravity.app')) ||
+      existsSync(join(applicationsDir, 'Antigravity', 'Antigravity.exe')) ||
+      existsSync(join(applicationsDir, 'antigravity', 'Antigravity.exe'));
+  } else if (IS_WINDOWS) {
+    const appDir = resolveDefaultWindowsAppPath(homedir());
+    installed = existsSync(join(appDir, 'Antigravity.exe'));
+  } else {
+    installed = existsSync(join('/Applications', 'Antigravity.app'));
+  }
   return {
-    channels: existsSync(join(applicationsDir, 'Antigravity.app')) ? ['stable'] : [],
+    channels: installed ? ['stable'] : [],
     bothInstalled: false,
     effectiveChannel: 'stable',
   };
@@ -126,18 +167,23 @@ export function applicationTarget(
 ) {
   applicationChannel(channel);
   const name = 'Antigravity';
-  const applicationsDir = options?.applicationsDir ?? '/Applications';
-  const appPath = options?.appPath ?? join(applicationsDir, `${name}.app`);
+  const applicationsDir = options?.applicationsDir ?? getDefaultApplicationsDir(home);
+  const appPath = options?.appPath ?? (
+    IS_WINDOWS
+      ? resolveDefaultWindowsAppPath(home, options?.applicationsDir)
+      : join(applicationsDir, `${name}.app`)
+  );
   assertStablePaths(appPath, options?.profile);
   const capabilities = probeBundleCapabilities(appPath, channel);
+  const isMacBundle = appPath.endsWith('.app') || !IS_WINDOWS;
   return {
     channel,
     name,
     label: 'Antigravity',
     bundleId: 'com.google.antigravity',
     appPath,
-    executable: name,
-    profile: options?.profile ?? join(home, 'Library', 'Application Support', name),
+    executable: isMacBundle ? name : `${name}.exe`,
+    profile: options?.profile ?? join(getDefaultAppSupportDir(home), name),
     dataDirectoryName: capabilities.dataDirectoryName,
     architecture: capabilities.architecture,
     supportsAccountSwitch: true,
@@ -146,9 +192,9 @@ export function applicationTarget(
 
 export type ApplicationTarget = ReturnType<typeof applicationTarget>;
 
-export function allApplicationTargets(home = homedir(), applicationsDir = '/Applications'): ApplicationTarget[] {
+export function allApplicationTargets(home = homedir(), applicationsDir?: string): ApplicationTarget[] {
   return [
-    applicationTarget('stable', home, { applicationsDir }),
+    applicationTarget('stable', home, applicationsDir ? { applicationsDir } : undefined),
   ];
 }
 
@@ -165,7 +211,14 @@ export function matchingTargetForLanguageServerCommand(
     ? [preferredTarget, ...allApplicationTargets(home).filter(t => t.appPath !== preferredTarget.appPath)]
     : allApplicationTargets(home);
   for (const candidate of candidates) {
-    if (!command.startsWith(candidate.appPath + '/Contents/Resources/bin/language_server ')) continue;
+    const macPrefix = candidate.appPath + '/Contents/Resources/bin/language_server ';
+    const winPrefix = getLanguageServerPath(candidate.appPath);
+    const trimmed = command.trim().replace(/^"/, '');
+    const matchedPrefix =
+      command.startsWith(macPrefix) ||
+      pathStartsWith(trimmed, winPrefix + ' ') ||
+      pathStartsWith(trimmed, winPrefix + '" ');
+    if (!matchedPrefix) continue;
     const dataDirectory = command.match(/(?:^|\s)--app_data_dir(?:=|\s+)([^\s"]+)/)?.[1];
     if (dataDirectory && dataDirectory !== candidate.dataDirectoryName) continue;
     return candidate;

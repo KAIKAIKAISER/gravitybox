@@ -47,6 +47,17 @@ import { acquireProcessLease, type ProcessLease } from './process-lock.js';
 import { createHash } from 'node:crypto';
 import { IdempotencyStore, canonicalPayload } from './ipc-idempotency.js';
 export { canonicalPayload } from './ipc-idempotency.js';
+import {
+  IS_WINDOWS,
+  getDefaultAppSupportDir,
+  getDefaultStateDir,
+  getDefaultTrashDir,
+  getIpcEndpoint,
+  isNamedPipeEndpoint,
+  isOwnedByCurrentUser,
+  pathStartsWith,
+  readWindowsProcesses,
+} from './platform.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -59,7 +70,9 @@ function sanitizeErrorMessage(err: unknown): string {
   if (!(err instanceof Error)) return bt('common.action_incomplete');
   const msg = err.message || '';
   const redacted = sanitizeError(msg);
-  const sanitized = redacted.replace(/\/(?:Users|private|var|tmp|Volumes)\/[^\s'"]+/g, bt('common.path_token'));
+  const sanitized = redacted
+    .replace(/\/(?:Users|private|var|tmp|Volumes)\/[^\s'"]+/g, bt('common.path_token'))
+    .replace(/[A-Za-z]:\\Users\\[^\s'"]+/gi, bt('common.path_token'));
   return sanitized.slice(0, 200);
 }
 
@@ -264,14 +277,16 @@ export async function buildDashboardAggregate(deps: DashboardAggregateDeps): Pro
 
 export async function request(command: string): Promise<any> {
   const argv = process.argv.slice(2);
-  const targetStateDir = resolve(cliOption(argv, '--state-dir', join(homedir(), 'Library', 'Application Support', 'GravityBox'))!);
-  const targetSocketPath = join(targetStateDir, 'control.sock');
-  const sockInfo = await lstat(targetSocketPath).catch((err: NodeJS.ErrnoException) => {
-    if (err?.code === 'ENOENT') throw new Error(bt('main.assistant_not_running'));
-    throw err;
-  });
-  if (!sockInfo.isSocket() || sockInfo.isSymbolicLink() || sockInfo.uid !== process.getuid?.()) {
-    throw new Error(bt('main.socket_mismatch'));
+  const targetStateDir = resolve(cliOption(argv, '--state-dir', getDefaultStateDir())!);
+  const targetSocketPath = getIpcEndpoint(targetStateDir);
+  if (!isNamedPipeEndpoint(targetSocketPath)) {
+    const sockInfo = await lstat(targetSocketPath).catch((err: NodeJS.ErrnoException) => {
+      if (err?.code === 'ENOENT') throw new Error(bt('main.assistant_not_running'));
+      throw err;
+    });
+    if (!sockInfo.isSocket() || sockInfo.isSymbolicLink() || !isOwnedByCurrentUser(sockInfo)) {
+      throw new Error(bt('main.socket_mismatch'));
+    }
   }
   return new Promise((resolveReply, reject) => {
     const client = createConnection(targetSocketPath); let buffer = ''; let received = 0;
@@ -304,14 +319,14 @@ async function run() {
   const command = option('--command');
   if (command) { console.log(JSON.stringify(await request(command))); return; }
   if (args.includes('--heal')) throw new Error(bt('main.heal_unsupported'));
-  const stateDir = resolve(option('--state-dir', join(homedir(), 'Library', 'Application Support', 'GravityBox'))!);
+  const stateDir = resolve(option('--state-dir', getDefaultStateDir())!);
   await mkdir(stateDir, { recursive: true, mode: 0o700 });
   const stateInfo = await lstat(stateDir);
-  if (!stateInfo.isDirectory() || stateInfo.isSymbolicLink() || stateInfo.uid !== process.getuid?.()) throw new Error(bt('main.state_dir_mismatch'));
+  if (!stateInfo.isDirectory() || stateInfo.isSymbolicLink() || !isOwnedByCurrentUser(stateInfo)) throw new Error(bt('main.state_dir_mismatch'));
   await chmod(stateDir, 0o700);
   const envPath = join(stateDir, '.env');
   const envInfo = await lstat(envPath).catch(() => null);
-  if (envInfo && envInfo.isFile() && !envInfo.isSymbolicLink() && envInfo.uid === process.getuid?.()) {
+  if (envInfo && envInfo.isFile() && !envInfo.isSymbolicLink() && isOwnedByCurrentUser(envInfo)) {
     try {
       process.loadEnvFile?.(envPath);
     } catch (error: any) {
@@ -320,7 +335,7 @@ async function run() {
       }
     }
   }
-  const socketPath = join(stateDir, 'control.sock');
+  const socketPath = getIpcEndpoint(stateDir);
   let configuredChannel: unknown;
   let configuredHudEnabled: unknown;
   let configuredAppLanguage: unknown;
@@ -357,7 +372,7 @@ async function run() {
     console.log(JSON.stringify(endpoint ? { found: true, pid: endpoint.pid, appVersion: endpoint.appVersion, legacyPatch: endpoint.legacyPatch, loopback: true } : { found: false })); return;
   }
   const geminiDir = option('--gemini-dir', process.env.GRAVITYBOX_GEMINI_DIR || process.env.GEMINI_DIR || join(homedir(), '.gemini'))!;
-  const cacheMaintenance = new CacheMaintenance(profile, join(homedir(), '.Trash'), undefined, { stateDir: channelStateDir, geminiDir, appPath });
+  const cacheMaintenance = new CacheMaintenance(profile, getDefaultTrashDir(), undefined, { stateDir: channelStateDir, geminiDir, appPath });
   const accountsManager = new AccountsManager(stateDir, { target });
   const liveIdeModelsPath = join(stateDir, 'live-ide-models.json');
   let liveSnapshotWriteChain = Promise.resolve();
@@ -387,7 +402,7 @@ async function run() {
   }
   const accountLogin = new GoogleAccountLogin((token, signal) => accountsManager.addAccountFromOAuth(token, signal));
   const homeDir = option('--home-dir', process.env.GRAVITYBOX_HOME_DIR || homedir())!;
-  const appSupportDir = option('--app-support-dir', process.env.GRAVITYBOX_APP_SUPPORT_DIR || join(homedir(), 'Library', 'Application Support'))!;
+  const appSupportDir = option('--app-support-dir', process.env.GRAVITYBOX_APP_SUPPORT_DIR || getDefaultAppSupportDir())!;
   const switchService = new AccountSwitchService(accountsManager, { stateDir, profile, channel });
   const usageManager = new UsageStatsManager({ stateDir, geminiDir });
   cacheMaintenance.setHooks({
@@ -469,28 +484,38 @@ async function run() {
       await atomicJson(configPath, { ...document, applicationChannel: 'stable' });
     }
   }
-  try {
-    const info = await lstat(socketPath);
-    if (!info.isSocket() || info.uid !== process.getuid?.()) throw new Error(bt('main.socket_mismatch'));
-    // Connection acceptance proves a live server even if a long operation delays its reply.
-    const live = await new Promise<boolean>((resolveLive, reject) => {
+  if (isNamedPipeEndpoint(socketPath)) {
+    const live = await new Promise<boolean>((resolveLive) => {
       const client = createConnection(socketPath);
       client.once('connect', () => { client.destroy(); resolveLive(true); });
-      client.once('error', (error: NodeJS.ErrnoException) => {
-        if (['ECONNREFUSED', 'ENOENT'].includes(error.code ?? '')) resolveLive(false);
-        else reject(new Error(bt('main.socket_unconfirmed')));
-      });
-      client.setTimeout(1500, () => { client.destroy(); reject(new Error(bt('main.socket_busy'))); });
+      client.once('error', () => { resolveLive(false); });
+      client.setTimeout(1500, () => { client.destroy(); resolveLive(false); });
     });
     if (live) throw new Error(bt('main.assistant_already_running'));
-    const current = await lstat(socketPath);
-    if (current.ino !== info.ino || current.dev !== info.dev) throw new Error(bt('main.socket_changed'));
-    await unlink(socketPath);
-  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  } else {
+    try {
+      const info = await lstat(socketPath);
+      if (!info.isSocket() || !isOwnedByCurrentUser(info)) throw new Error(bt('main.socket_mismatch'));
+      // Connection acceptance proves a live server even if a long operation delays its reply.
+      const live = await new Promise<boolean>((resolveLive, reject) => {
+        const client = createConnection(socketPath);
+        client.once('connect', () => { client.destroy(); resolveLive(true); });
+        client.once('error', (error: NodeJS.ErrnoException) => {
+          if (['ECONNREFUSED', 'ENOENT'].includes(error.code ?? '')) resolveLive(false);
+          else reject(new Error(bt('main.socket_unconfirmed')));
+        });
+        client.setTimeout(1500, () => { client.destroy(); reject(new Error(bt('main.socket_busy'))); });
+      });
+      if (live) throw new Error(bt('main.assistant_already_running'));
+      const current = await lstat(socketPath);
+      if (current.ino !== info.ino || current.dev !== info.dev) throw new Error(bt('main.socket_changed'));
+      await unlink(socketPath);
+    } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  }
   await mkdir(channelStateDir, { recursive: true, mode: 0o700 });
   const userDir = join(stateDir, '词典'); await mkdir(userDir, { recursive: true, mode: 0o700 });
   const userInfo = await lstat(userDir);
-  if (userInfo.isSymbolicLink() || !userInfo.isDirectory() || userInfo.uid !== process.getuid?.()) throw new Error(bt('main.dict_dir_mismatch'));
+  if (userInfo.isSymbolicLink() || !userInfo.isDirectory() || !isOwnedByCurrentUser(userInfo)) throw new Error(bt('main.dict_dir_mismatch'));
   const personalPath = join(userDir, '个人覆盖.json');
   try { await lstat(personalPath); } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') await atomicJson(personalPath, {}); else throw error; }
   const baseDir = fileURLToPath(new URL('../dict/', import.meta.url));
@@ -869,28 +894,46 @@ async function run() {
           const insidersPrefix = '/Applications/Antigravity - Insiders.app/Contents/';
           const stablePrefix = `${target.appPath}/Contents/`;
           try {
-            const { stdout: psOut } = await execFileAsync('/bin/ps', ['-ax', '-ww', '-o', 'pid=,pcpu=,args='], { timeout: 3000 });
-            for (const line of psOut.split('\n')) {
-              const m = line.trim().match(/^(\d+)\s+([\d.]+)\s+(.*)$/);
-              if (!m) continue;
-              const cpu = parseFloat(m[2] || '0');
-              const args = m[3] || '';
-              if (args.startsWith(insidersPrefix)) {
-                // Align with AccountSwitchService.guardStopped(): block any Insiders process sharing official credentials.
-                appRunning = true;
-                insidersRunning = true;
-              } else if (args.startsWith(stablePrefix)) {
-                appRunning = true;
-                stableRunning = true;
-              } else {
-                continue;
+            if (IS_WINDOWS) {
+              const procs = await readWindowsProcesses();
+              for (const proc of procs) {
+                const exe = proc.executablePath || proc.commandLine || '';
+                if (/Antigravity - Insiders\.exe/i.test(proc.name) || /Antigravity - Insiders/i.test(exe)) {
+                  appRunning = true;
+                  insidersRunning = true;
+                } else if (
+                  (target.appPath && pathStartsWith(exe, target.appPath)) ||
+                  /^Antigravity\.exe$/i.test(proc.name) ||
+                  /^language_server\.exe$/i.test(proc.name)
+                ) {
+                  appRunning = true;
+                  stableRunning = true;
+                }
               }
-              if (/language_server/i.test(args) && cpu >= 3.0) {
-                hasRunningTask = true;
-                taskReason = bt('main.task.active_inference');
-              } else if (/Helper \((?:Plugin|Renderer)\)/i.test(args) && cpu >= 15.0) {
-                hasRunningTask = true;
-                taskReason = bt('main.task.active_inference');
+            } else {
+              const { stdout: psOut } = await execFileAsync('/bin/ps', ['-ax', '-ww', '-o', 'pid=,pcpu=,args='], { timeout: 3000 });
+              for (const line of psOut.split('\n')) {
+                const m = line.trim().match(/^(\d+)\s+([\d.]+)\s+(.*)$/);
+                if (!m) continue;
+                const cpu = parseFloat(m[2] || '0');
+                const args = m[3] || '';
+                if (args.startsWith(insidersPrefix)) {
+                  // Align with AccountSwitchService.guardStopped(): block any Insiders process sharing official credentials.
+                  appRunning = true;
+                  insidersRunning = true;
+                } else if (args.startsWith(stablePrefix)) {
+                  appRunning = true;
+                  stableRunning = true;
+                } else {
+                  continue;
+                }
+                if (/language_server/i.test(args) && cpu >= 3.0) {
+                  hasRunningTask = true;
+                  taskReason = bt('main.task.active_inference');
+                } else if (/Helper \((?:Plugin|Renderer)\)/i.test(args) && cpu >= 15.0) {
+                  hasRunningTask = true;
+                  taskReason = bt('main.task.active_inference');
+                }
               }
             }
           } catch {}
@@ -1193,24 +1236,34 @@ async function run() {
           else throw new Error(bt('main.unknown_command'));
           await writeChain; await cacheChain.catch(() => {});
           reply({ ok: true, status: controller.snapshot() });
-          if (stopping) { await unlink(socketPath).catch(() => {}); await backendLease?.release(); setTimeout(() => process.exit(0), 100); }
+          if (stopping) {
+            if (!isNamedPipeEndpoint(socketPath)) await unlink(socketPath).catch(() => {});
+            await backendLease?.release();
+            setTimeout(() => process.exit(0), 100);
+          }
         } catch (error) { reply({ ok: false, error: sanitizeErrorMessage(error) }); }
       });
     });
   });
   server.maxConnections = 64;
-  const previousUmask = process.umask(0o177);
-  try {
+  if (isNamedPipeEndpoint(socketPath)) {
     await new Promise<void>((resolveListen, reject) => { server.once('error', reject); server.listen(socketPath, resolveListen); });
-  } finally {
-    process.umask(previousUmask);
+  } else {
+    const previousUmask = process.umask(0o177);
+    try {
+      await new Promise<void>((resolveListen, reject) => { server.once('error', reject); server.listen(socketPath, resolveListen); });
+    } finally {
+      process.umask(previousUmask);
+    }
+    await chmod(socketPath, 0o600);
   }
-  await chmod(socketPath, 0o600);
   const stop = async (code = 0) => {
     if (stopping) return; stopping = true;
     server.close();
     await commandChain.catch(() => {});
-    await accountLogin.close(); await tasks.stop(); store.close(); await controller.stop(); await writeChain; await cacheChain.catch(() => {}); await unlink(socketPath).catch(() => {}); await backendLease?.release(); process.exit(code);
+    await accountLogin.close(); await tasks.stop(); store.close(); await controller.stop(); await writeChain; await cacheChain.catch(() => {});
+    if (!isNamedPipeEndpoint(socketPath)) await unlink(socketPath).catch(() => {});
+    await backendLease?.release(); process.exit(code);
   };
   process.off('SIGTERM', earlySignalExit); process.off('SIGINT', earlySignalExit);
   process.on('SIGTERM', () => void stop()); process.on('SIGINT', () => void stop());

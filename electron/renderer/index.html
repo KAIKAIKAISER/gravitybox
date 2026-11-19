@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GravityBox</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="drag-strip"></div>
+      <div class="brand-row">
+        <img src="../../assets/master-1024.png" alt="GravityBox" />
+        <span class="brand-name">GravityBox</span>
+      </div>
+      <nav class="nav-list" id="nav-list"></nav>
+      <div class="sidebar-footer">
+        <div class="status-chip" id="sidebar-status">
+          <span class="status-dot" id="sidebar-status-dot"></span>
+          <span class="truncate" id="sidebar-status-text">…</span>
+        </div>
+        <button class="btn btn-block" id="btn-open-antigravity">打开 Antigravity</button>
+      </div>
+    </aside>
+
+    <main class="main-pane">
+      <div class="top-drag-bar"></div>
+      <div class="page-scroll" id="page-root"></div>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="modal-backdrop">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title" id="modal-title"></div>
+        <button class="btn btn-sm" id="modal-close-x">✕</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+      <div class="modal-footer" id="modal-footer"></div>
+    </div>
+  </div>
+
+  <div class="toast-stack" id="toast-stack"></div>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>

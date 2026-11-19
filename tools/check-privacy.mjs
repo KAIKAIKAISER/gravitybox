@@ -93,7 +93,7 @@ function sha256Hex(text) {
 export function isExcludedPrivacyPath(filePath) {
   const rel = filePath.replaceAll('\\', '/').replace(/^\.\//, '');
   if (!rel) return true;
-  if (rel === 'AGENTS.md' || rel.startsWith('licenses/')) return true;
+  if (rel === 'AGENTS.md' || rel === 'package-lock.json' || rel.startsWith('licenses/')) return true;
   const segments = rel.split('/');
   if (segments.some(seg => SKIPPED_DIRS.has(seg))) return true;
   if (BINARY_EXTENSIONS.has(extname(rel).toLowerCase())) return true;

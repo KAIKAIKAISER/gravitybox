@@ -13,6 +13,7 @@ import { CDP } from '../dist/cdp.js';
 import { DEEP_STEPS } from '../dist/deep-scan.js';
 import { DatabaseSync } from 'node:sqlite';
 import { ProtobufWriter as HudWriter } from '../dist/protobuf.js';
+import { getIpcEndpoint } from '../dist/platform.js';
 const execute = promisify(execFile);
 const root = fileURLToPath(new URL('../', import.meta.url));
 const releaseVersion = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version;
@@ -38,7 +39,7 @@ async function until(fn, timeout = 8000, label = '') {
 }
 async function command(command) {
   return new Promise((resolve, reject) => {
-    const socket = createConnection(join(state, 'control.sock'));
+    const socket = createConnection(getIpcEndpoint(state));
     let buffer = '';
     socket.setTimeout(10000, () => { socket.destroy(); reject(new Error('命令超时')); });
     socket.on('connect', () => socket.write(JSON.stringify(typeof command==='object'?command:{command}) + '\n'));

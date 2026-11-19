@@ -2,6 +2,7 @@ import {stat} from 'node:fs/promises';
 import {join} from 'node:path';
 import {fetchBundleWithHash} from './bundle.js';
 import {bt} from './i18n.js';
+import {getAppResourcesDir} from './platform.js';
 /** Memory-only identity-bound fingerprint cache; source bodies are never retained. */
 export class BundleCache {
   downloads=0;downloadedBytes=0;
@@ -9,8 +10,9 @@ export class BundleCache {
   private pending=new Map<string,Promise<{hash:string;source:string|undefined;cacheHit:boolean}>>();
   async key(app:string,pid:number,version:string,origin:string){
     const rows=[];
+    const resourcesDir = getAppResourcesDir(app);
     for(const name of ['app.asar','app.asar.unpacked']){
-      try{const s=await stat(join(app,'Contents/Resources',name));rows.push([name,s.dev,s.ino,s.size,s.mtimeMs,s.ctimeMs]);}
+      try{const s=await stat(join(resourcesDir,name));rows.push([name,s.dev,s.ino,s.size,s.mtimeMs,s.ctimeMs]);}
       catch(error){if(name==='app.asar'||(error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
     }
     return JSON.stringify([app,pid,version,new URL(origin).origin,rows]);

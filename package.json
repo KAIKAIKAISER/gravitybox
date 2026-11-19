@@ -3,7 +3,8 @@
   "version": "1.1.2",
   "private": true,
   "type": "module",
-  "description": "GravityBox: Native macOS Antigravity Companion · 原生 macOS Antigravity 全功能增强伴侣",
+  "main": "electron/main.mjs",
+  "description": "GravityBox: Antigravity Companion for Windows & macOS · Antigravity 全功能增强伴侣（支持 Windows Electron 桌面端与系统托盘）",
   "license": "MIT",
   "author": "Enzoo404 <enzoo404@users.noreply.github.com>",
   "repository": {
@@ -25,8 +26,10 @@
     "check:swift": "node tools/native-build.mjs --typecheck",
     "check:privacy": "node tools/check-privacy.mjs",
     "start": "node dist/main.js",
+    "electron:start": "npm run build && electron .",
     "verify": "node tools/verify.mjs",
     "verify:strict": "node tools/verify.mjs --strict",
+    "package:win": "npm run build && node tools/generate-win-ico.mjs && node tools/package-win.mjs",
     "package:mac": "npm run verify && node tools/package-mac.mjs",
     "package:mac:full": "npm run verify && node tools/package-mac.mjs && node tools/update-acceptance.mjs && node tools/check-docs.mjs",
     "i18n:extract": "node tools/extract-ui-strings.mjs",
@@ -45,10 +48,58 @@
     "preverify": "node tools/doctor.mjs --install"
   },
   "engines": {
-    "node": ">=22.15.0 <23"
+    "node": ">=22.15.0"
+  },
+  "build": {
+    "appId": "local.gravitybox.app",
+    "productName": "GravityBox",
+    "asar": true,
+    "asarUnpack": [
+      "dist/**",
+      "dict/**",
+      "assets/**",
+      "package.json"
+    ],
+    "files": [
+      "electron/**/*",
+      "dist/**/*",
+      "dict/**/*",
+      "assets/**/*",
+      "!assets/screenshots/**",
+      "package.json",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md"
+    ],
+    "directories": {
+      "output": "成品"
+    },
+    "win": {
+      "icon": "assets/icons/app.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["x64"]
+        }
+      ],
+      "artifactName": "GravityBox-${version}-win-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "artifactName": "GravityBox-Setup-${version}-${arch}.${ext}"
+    }
   },
   "devDependencies": {
-    "typescript": "5.9.3",
-    "@types/node": "22.20.5"
+    "@types/node": "22.20.5",
+    "electron": "^36.9.5",
+    "electron-builder": "^26.18.0",
+    "typescript": "5.9.3"
   }
 }

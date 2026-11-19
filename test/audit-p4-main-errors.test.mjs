@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AccountsManager } from '../dist/accounts.js';
+import { getIpcEndpoint } from '../dist/platform.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -137,7 +138,7 @@ test('B13: 聚合 accounts.activeTier 对空串/未知值回落 待确认', asyn
 // 真实后台契约：dashboard_summary 仍 ok:true，并稳定携带 errors 字段与枚举套餐。
 function rpc(directory, payload) {
   return new Promise((resolve, reject) => {
-    const socket = createConnection(join(directory, 'control.sock'));
+    const socket = createConnection(getIpcEndpoint(directory));
     const chunks = [];
     socket.setTimeout(8000, () => { socket.destroy(); reject(new Error('IPC 超时')); });
     socket.on('connect', () => socket.write(JSON.stringify(payload) + '\n'));

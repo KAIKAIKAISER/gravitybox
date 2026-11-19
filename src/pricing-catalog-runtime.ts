@@ -3,6 +3,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { readOptionalJson } from './files.js';
+import { openAsarArchive } from './asar.js';
+import { getAppAsarPath, isOwnedByCurrentUser } from './platform.js';
 import type { AccountsManager, LiveLanguageServerStatus } from './accounts.js';
 import type { UsageStatsManager } from './usage.js';
 import {
@@ -33,6 +35,39 @@ export interface LiveIdeModelsSnapshot {
 
 export async function readInstalledAppBundleVersion(appPath: string): Promise<string> {
   if (!appPath) return '';
+  if (!appPath.endsWith('.app')) {
+    try {
+      const verFile = (await readFile(join(appPath, 'version'), 'utf8')).trim();
+      if (verFile) {
+        // Also check app.asar package.json for product semver (e.g. 2.33.0)
+        try {
+          const archive = await openAsarArchive(getAppAsarPath(appPath), 16_000_000);
+          try {
+            const buf = await archive.readEntryBuffer(archive.header.files?.['package.json'], 256_000, 1);
+            if (buf) {
+              const pkg = JSON.parse(buf.toString('utf8'));
+              if (typeof pkg?.version === 'string' && pkg.version.trim()) return pkg.version.trim();
+            }
+          } finally {
+            await archive.close();
+          }
+        } catch {}
+        return verFile;
+      }
+    } catch {}
+    try {
+      const archive = await openAsarArchive(getAppAsarPath(appPath), 16_000_000);
+      try {
+        const buf = await archive.readEntryBuffer(archive.header.files?.['package.json'], 256_000, 1);
+        if (buf) {
+          const pkg = JSON.parse(buf.toString('utf8'));
+          if (typeof pkg?.version === 'string' && pkg.version.trim()) return pkg.version.trim();
+        }
+      } finally {
+        await archive.close();
+      }
+    } catch {}
+  }
   const plistPath = join(appPath, 'Contents/Info.plist');
   try {
     const raw = await readFile(plistPath, 'utf8');
@@ -96,7 +131,7 @@ export async function readValidLiveIdeModelsSnapshot(
   const cleanInstalled = String(installedAppVersion || '').trim();
   if (!cleanInstalled) return null;
   const info = await lstat(snapshotPath).catch(() => null);
-  if (!info || !info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid?.()) {
+  if (!info || !info.isFile() || info.isSymbolicLink() || !isOwnedByCurrentUser(info)) {
     return null;
   }
   const data = await readOptionalJson<LiveIdeModelsSnapshot>(snapshotPath, 'live-ide-models.json');

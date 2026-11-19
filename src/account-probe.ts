@@ -18,6 +18,13 @@ import {
 } from './quota.js';
 import type { LiveLanguageServerStatus, ModelQuota, QuotaData, QuotaGroup } from './accounts.js';
 import { bt } from './i18n.js';
+import {
+  IS_WINDOWS,
+  getLanguageServerPath,
+  pathStartsWith,
+  readWindowsListeningPorts,
+  readWindowsProcesses,
+} from './platform.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -25,7 +32,14 @@ export type CloudProviderContext = { origin: string; userAgent: string; appVersi
 const CLOUD_ORIGINS = new Set(['https://cloudcode-pa.googleapis.com', 'https://daily-cloudcode-pa.googleapis.com', 'https://daily-cloudcode-pa.sandbox.googleapis.com']);
 
 export function cloudOriginFromCommand(command: string, target = applicationTarget()): string | null {
-  if (!command.startsWith(target.appPath + '/Contents/Resources/bin/language_server ')) return null;
+  const macPrefix = target.appPath + '/Contents/Resources/bin/language_server ';
+  const winPrefix = getLanguageServerPath(target.appPath);
+  const trimmed = command.trim().replace(/^"/, '');
+  const matchesBinary =
+    command.startsWith(macPrefix) ||
+    pathStartsWith(trimmed, winPrefix + ' ') ||
+    pathStartsWith(trimmed, winPrefix + '" ');
+  if (!matchesBinary) return null;
   const dataDirectory = command.match(/(?:^|\s)--app_data_dir(?:=|\s+)([^\s"]+)/)?.[1];
   if (dataDirectory && dataDirectory !== target.dataDirectoryName) return null;
   const value = command.match(/(?:^|\s)--cloud_code_endpoint(?:=|\s+)([^\s"]+)/)?.[1];
@@ -54,7 +68,10 @@ export function validCachedCloudProviderContext(value: any, appVersion: string, 
   if (!value || value.identityVersion !== 2 || !CLOUD_ORIGINS.has(value.origin)
     || typeof value.clientSubType !== 'string'
     || (value.clientSubType !== '' && !/^[a-z][a-z0-9_-]{0,31}$/.test(value.clientSubType))) return false;
-  const expected = cloudProviderContextFromCommand(target.appPath + '/Contents/Resources/bin/language_server --cloud_code_endpoint '
+  const lsBinary = target.appPath.endsWith('.app')
+    ? target.appPath + '/Contents/Resources/bin/language_server'
+    : getLanguageServerPath(target.appPath);
+  const expected = cloudProviderContextFromCommand(lsBinary + ' --cloud_code_endpoint '
     + value.origin + (value.clientSubType ? ' --subclient_type ' + value.clientSubType : ''), appVersion, target);
   return !!expected && value.appVersion === expected.appVersion && value.userAgent === expected.userAgent;
 }
@@ -472,27 +489,46 @@ export async function probeLiveLanguageServerOnce(
       cachedLiveEndpoint = null;
     }
 
-    const { stdout: psOut } = await execFileAsync('/bin/ps', ['-ax', '-ww', '-o', 'pid=,args='], { timeout: 3000 });
-    const lines = psOut.split('\n');
     let targetPid = 0;
     let csrfToken = '';
     let matchedAppPath = target.appPath;
 
-    for (const line of lines) {
-      if (line.includes('--csrf_token')) {
-        const trimmed = line.trim();
-        const mPid = trimmed.match(/^(\d+)\s+(.+)$/);
-        if (mPid) {
-          const pid = parseInt(mPid[1]!, 10);
-          const cmd = mPid[2]!;
-          const matchedTarget = matchingTargetForLanguageServerCommand(cmd, target);
-          if (matchedTarget) {
-            const mCsrf = cmd.match(/--csrf_token[=\s]+([^\s]+)/);
-            if (mCsrf) {
-              targetPid = pid;
-              csrfToken = mCsrf[1]!;
-              matchedAppPath = matchedTarget.appPath;
-              break;
+    if (IS_WINDOWS) {
+      const procs = await readWindowsProcesses();
+      for (const proc of procs) {
+        const cmd = proc.commandLine || '';
+        if (!cmd.includes('--csrf_token')) continue;
+        const matchedTarget = matchingTargetForLanguageServerCommand(cmd, target);
+        if (matchedTarget) {
+          const mCsrf = cmd.match(/--csrf_token[=\s]+([^\s"]+)/);
+          if (mCsrf) {
+            targetPid = proc.pid;
+            csrfToken = mCsrf[1]!;
+            matchedAppPath = matchedTarget.appPath;
+            break;
+          }
+        }
+      }
+    } else {
+      const { stdout: psOut } = await execFileAsync('/bin/ps', ['-ax', '-ww', '-o', 'pid=,args='], { timeout: 3000 });
+      const lines = psOut.split('\n');
+
+      for (const line of lines) {
+        if (line.includes('--csrf_token')) {
+          const trimmed = line.trim();
+          const mPid = trimmed.match(/^(\d+)\s+(.+)$/);
+          if (mPid) {
+            const pid = parseInt(mPid[1]!, 10);
+            const cmd = mPid[2]!;
+            const matchedTarget = matchingTargetForLanguageServerCommand(cmd, target);
+            if (matchedTarget) {
+              const mCsrf = cmd.match(/--csrf_token[=\s]+([^\s]+)/);
+              if (mCsrf) {
+                targetPid = pid;
+                csrfToken = mCsrf[1]!;
+                matchedAppPath = matchedTarget.appPath;
+                break;
+              }
             }
           }
         }
@@ -506,6 +542,10 @@ export async function probeLiveLanguageServerOnce(
       const verifiedPorts = await resolveVerifiedLanguageServerPorts(targetPid, matchedAppPath);
       if (!verifiedPorts || verifiedPorts.length === 0) return null;
       ports = verifiedPorts;
+    } else if (IS_WINDOWS) {
+      const allPorts = await readWindowsListeningPorts();
+      ports = Array.from(new Set(allPorts.filter(p => p.pid === targetPid && p.address.startsWith('127.0.0.1:')).map(p => p.port)));
+      if (ports.length === 0) return null;
     } else {
       const { stdout: lsofOut } = await execFileAsync(
         '/usr/sbin/lsof',

@@ -59,6 +59,17 @@ export function resolveAsarEntryRange(
   return { size, offset };
 }
 
+function withoutElectronAsar<T>(fn: () => T): T {
+  const proc = process as NodeJS.Process & { noAsar?: boolean };
+  const prev = proc.noAsar;
+  proc.noAsar = true;
+  try {
+    return fn();
+  } finally {
+    proc.noAsar = prev;
+  }
+}
+
 /** Synchronously inspect ASAR header and read individual entries without loading the whole archive. */
 export function openAsarSync(asarPath: string, maxHeaderBytes = 16_000_000): {
   header: AsarHeader;
@@ -66,7 +77,7 @@ export function openAsarSync(asarPath: string, maxHeaderBytes = 16_000_000): {
   readEntryBuffer(entry: AsarFileEntry | undefined, maxSize: number, minSize?: number): Buffer | null;
   close(): void;
 } {
-  const fd = openSync(asarPath, 'r');
+  const fd = withoutElectronAsar(() => openSync(asarPath, 'r'));
   try {
     const prefix = Buffer.alloc(16);
     if (readSync(fd, prefix, 0, 16, 0) !== 16) {
@@ -108,7 +119,7 @@ export async function openAsarArchive(asarPath: string, maxHeaderBytes = 16_000_
   readEntryBuffer(entry: AsarFileEntry | undefined, maxSize: number, minSize?: number): Promise<Buffer | null>;
   close(): Promise<void>;
 }> {
-  const handle: FileHandle = await open(asarPath, 'r');
+  const handle: FileHandle = await withoutElectronAsar(() => open(asarPath, 'r'));
   try {
     const stat = await handle.stat();
     const prefix = Buffer.alloc(16);

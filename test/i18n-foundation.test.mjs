@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getIpcEndpoint } from '../dist/platform.js';
 import {
   bt,
   detectSystemLocales,
@@ -212,7 +213,7 @@ test('macOS 无 LANG 环境或遵循 AppleLanguages 时 system 语言解析与�
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const rpc = (directory, payload) =>
     new Promise((resolve, reject) => {
-      const socket = createConnection(join(directory, 'control.sock'));
+      const socket = createConnection(getIpcEndpoint(directory));
       let value = '';
       socket.setTimeout(8000, () => {
         socket.destroy();
@@ -229,7 +230,7 @@ test('macOS 无 LANG 环境或遵循 AppleLanguages 时 system 语言解析与�
       });
     });
 
-  const directory = await mkdtemp('/tmp/gb-i18n-ipc-');
+  const directory = await mkdtemp(join(tmpdir(), 'gb-i18n-ipc-'));
   await mkdir(join(directory, '词典'), { recursive: true });
   const env = { ...process.env, GRAVITYBOX_PROBE_LS: 'false' };
   delete env.LANG;

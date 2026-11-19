@@ -21,6 +21,7 @@ import { compareLayers } from '../dist/dictionary.js';
 import { UsageStatsManager } from '../dist/usage.js';
 import { AccountsManager, MockKeychainAdapter, cloudProviderContextFromCommand, validCachedCloudProviderContext } from '../dist/accounts.js';
 import { AccountSwitchService } from '../dist/account-switch.js';
+import { getIpcEndpoint } from '../dist/platform.js';
 
 const temporary = async t => { const dir = await mkdtemp(join(tmpdir(), 'gb-channel-')); t.after(() => rm(dir, { recursive: true, force: true })); return dir; };
 const quota = fraction => ({ models: [], last_updated: 1700000000, is_forbidden: false, model_forwarding_rules: {}, subscription_tier: fraction });
@@ -233,7 +234,7 @@ test('IPC 将旧 Insiders 配置备份后迁移到正式版，拒绝通道切换
     { env: { ...process.env, GRAVITYBOX_PROBE_LS: 'false' }, stdio: 'ignore' },
   );
   t.after(async () => { if (child.exitCode === null) { child.kill('SIGTERM'); await once(child, 'exit'); } });
-  const socket = join(state, 'control.sock');
+  const socket = getIpcEndpoint(state);
   let ready = false;
   for (let i = 0; i < 100; i++) {
     try { await request(socket, { command: 'ping' }); ready = true; break; } catch {}

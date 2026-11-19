@@ -3,15 +3,17 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createConnection } from 'node:net';
 import { mkdtemp, mkdir } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getIpcEndpoint } from '../dist/platform.js';
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 /** Raw socket round-trip: the caller decides how the request is sliced. */
 function exchange(directory, chunks, { timeout = 5000 } = {}) {
   return new Promise((resolve, reject) => {
-    const socket = createConnection(join(directory, 'control.sock'));
+    const socket = createConnection(getIpcEndpoint(directory));
     let value = '';
     const timer = setTimeout(() => { socket.destroy(); reject(new Error('IPC 超时')); }, timeout);
     const finish = error => { clearTimeout(timer); socket.destroy(); error ? reject(error) : resolve(value); };
@@ -28,7 +30,7 @@ function exchange(directory, chunks, { timeout = 5000 } = {}) {
 }
 
 async function startBackend() {
-  const directory = await mkdtemp('/tmp/gb-ipc-hard-');
+  const directory = await mkdtemp(join(tmpdir(), 'gb-ipc-hard-'));
   await mkdir(join(directory, '词典'));
   const child = spawn(process.execPath, [
     fileURLToPath(new URL('../dist/main.js', import.meta.url)),

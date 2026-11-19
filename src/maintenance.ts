@@ -1,6 +1,5 @@
 import { lstat, readdir, mkdir, readFile } from 'node:fs/promises';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
-import { homedir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { ReentrantMutex } from './mutex.js';
 import { executeMoves, reconcileMoves, readMaintenanceManifest, type JournalMove } from './maintenance-journal.js';
@@ -27,6 +26,7 @@ import {
   type SubTargetSpec,
 } from './maintenance-catalog.js';
 import { bt } from './i18n.js';
+import { getDefaultCacheDir, getDefaultTrashDir } from './platform.js';
 import {
   checkRunningConversation,
   collectAgentConversationTargets,
@@ -78,7 +78,7 @@ export class CacheMaintenance {
 
   constructor(
     private profile: string,
-    private trash = join(homedir(), '.Trash'),
+    private trash = getDefaultTrashDir(),
     private running = antigravityRunning,
     private options: CacheMaintenanceOptions = {},
   ) {
@@ -104,7 +104,7 @@ export class CacheMaintenance {
     if (this.options.stateDir) {
       return join(resolve(this.options.stateDir), 'maintenance-trash');
     }
-    return join(homedir(), 'Library', 'Caches', 'GravityBox', 'maintenance-trash');
+    return join(getDefaultCacheDir(), 'maintenance-trash');
   }
 
   private candidateTrashDirs(): string[] {

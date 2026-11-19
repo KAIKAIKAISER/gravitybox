@@ -1,4 +1,4 @@
-name: Release
+name: Release (Windows)
 
 on:
   push:
@@ -7,69 +7,30 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: '已存在的版本标签（如 v1.1.1）；仅构建草稿，不公开发布'
-        required: true
+        description: 'Release tag to publish (e.g. v1.1.2). Defaults to package.json version if empty.'
+        required: false
         type: string
-      inspect_only:
-        description: '只读检查现有草稿（从 main 运行，不构建、不上传、不公开）'
-        required: true
-        default: false
-        type: boolean
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: release-${{ inputs.tag || github.ref_name }}
+  group: release-win-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
-  inspect-draft:
-    name: Inspect Existing Draft (Read Only)
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.inspect_only }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    # GitHub only lists drafts for identities with push access. This job performs GETs only.
-    permissions:
-      contents: write
+  build-and-publish:
+    name: Build & Publish Windows Release
+    runs-on: windows-latest
+    timeout-minutes: 30
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      RELEASE_TAG: ${{ inputs.tag }}
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
-      - name: Require Main Controller
-        shell: bash
-        run: '[[ "$GITHUB_REF" == refs/heads/main ]] || { echo "请从 main 运行只读检查" >&2; exit 1; }'
-      - name: Checkout Controller & Tags
+      - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Setup Node.js 22
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Inspect Uploaded Draft Metadata
-        run: node tools/release-control.mjs inspect
-
-  build-draft:
-    name: Verify & Prepare Draft DMG
-    if: ${{ github.event_name == 'push' || !inputs.inspect_only }}
-    runs-on: macos-latest
-    timeout-minutes: 25
-    permissions:
-      contents: write
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-    steps:
-      - name: Validate Tag Format
-        shell: bash
-        run: |
-          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo '需要 vX.Y.Z 正式版本标签' >&2; exit 1; }
-
-      - name: Checkout Tagged Code
-        uses: actions/checkout@v4
-        with:
-          ref: refs/tags/${{ inputs.tag || github.ref_name }}
 
       - name: Setup Node.js 22
         uses: actions/setup-node@v4
@@ -77,51 +38,66 @@ jobs:
           node-version: 22
           cache: 'npm'
 
-      - name: Check Version, Commit & Existing Release
-        run: node tools/release-control.mjs preflight
+      - name: Resolve Release Tag
+        id: meta
+        shell: pwsh
+        run: |
+          $pkg = Get-Content package.json -Raw | ConvertFrom-Json
+          $version = $pkg.version
+          $tag = "${{ inputs.tag }}"
+          if ([string]::IsNullOrWhiteSpace($tag)) {
+            if ("${{ github.ref_type }}" -eq "tag") {
+              $tag = "${{ github.ref_name }}"
+            } else {
+              $tag = "v$version"
+            }
+          }
+          if ($tag -notmatch '^v\d+\.\d+\.\d+$') {
+            throw "Invalid tag format: $tag (expected vX.Y.Z)"
+          }
+          if ($tag.Substring(1) -ne $version) {
+            throw "Tag $tag does not match package.json version $version"
+          }
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Install Dependencies
-        run: npm ci --ignore-scripts
+        run: npm ci
 
-      - name: Check Development Environment
-        run: npm run doctor
+      - name: Build TypeScript & Runtime
+        run: npm run build
 
-      - name: Cache Pinned Test Browser
-        uses: actions/cache@v4
-        with:
-          path: .cache/test-chrome-*
-          key: ${{ runner.os }}-${{ runner.arch }}-chrome-${{ hashFiles('tools/setup-test-browser.mjs') }}
+      - name: Privacy Gate
+        run: node tools/check-privacy.mjs
 
-      - name: Setup Pinned Test Browser
-        run: node tools/setup-test-browser.mjs
+      - name: Build Windows Installer & Portable ZIP
+        run: node tools/package-win.mjs --skip-build
 
-      - name: Verify & Package DMG
-        env:
-          CI: true
-          GRAVITYBOX_CI_HEADLESS: '1'
-          TZ: UTC
+      - name: Publish GitHub Release
+        shell: pwsh
         run: |
-          node tools/verify.mjs --no-vendor
-          node tools/package-mac.mjs
-          node tools/release-control.mjs manifest
+          $tag = "${{ steps.meta.outputs.tag }}"
+          $ver = "${{ steps.meta.outputs.version }}"
+          $exe = "成品/GravityBox-Setup-$ver-x64.exe"
+          $zip = "成品/GravityBox-$ver-win-x64.zip"
+          $manifest = "成品/release-manifest.json"
+          $existing = gh release view $tag --json tagName 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $exe "$exe.sha256" $zip "$zip.sha256" $manifest --clobber
+          } else {
+            gh release create $tag $exe "$exe.sha256" $zip "$zip.sha256" $manifest `
+              --title "GravityBox $tag (Windows)" `
+              --generate-notes `
+              --target "${{ github.sha }}"
+          }
 
-      - name: Create Draft Without Replacing Assets
-        shell: bash
-        run: |
-          node tools/release-control.mjs preflight
-          DMG="成品/GravityBox-${RELEASE_TAG#v}-arm64.dmg"
-          gh release create "$RELEASE_TAG" "$DMG" "$DMG.sha256" 成品/release-manifest.json \
-            --draft --verify-tag --title "GravityBox $RELEASE_TAG" --generate-notes
-          echo '草稿已生成。下载并验收此 DMG 后，通过 Publish Accepted Release 手动发布；不要重新构建。' >> "$GITHUB_STEP_SUMMARY"
-          cat "$DMG.sha256" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Verify Uploaded Draft Metadata
-        run: node tools/release-control.mjs inspect
-
-      - name: Preserve Verification Reports
-        if: always()
+      - name: Upload Artifacts Copy
         uses: actions/upload-artifact@v4
         with:
-          name: release-verification-${{ github.run_id }}
-          path: 质检报告/
-          retention-days: 7
+          name: gravitybox-release-${{ steps.meta.outputs.tag }}
+          path: |
+            成品/*.exe
+            成品/*.zip
+            成品/*.sha256
+            成品/release-manifest.json
+          retention-days: 14

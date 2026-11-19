@@ -3,10 +3,11 @@ import {readFile} from 'node:fs/promises';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {join} from 'node:path';
-const root=fileURLToPath(new URL('../',import.meta.url)),setup=process.argv.includes('--setup'),install=setup||process.argv.includes('--install'),skipNative=process.argv.includes('--skip-native');
+const root=fileURLToPath(new URL('../',import.meta.url)),setup=process.argv.includes('--setup'),install=setup||process.argv.includes('--install'),skipNative=process.argv.includes('--skip-native')||process.platform!=='darwin';
 const version=JSON.parse(await readFile(join(root,'package.json'))).version;
-if(!process.versions.node.startsWith('22.')){process.stderr.write('开发需要 Node 22。当前应用已自带运行环境，日常使用不受影响。\n');process.exit(1);}
-function run(args){execFileSync('npm',args,{cwd:root,stdio:'inherit'});}
+const major=Number(process.versions.node.split('.')[0]);
+if(!Number.isFinite(major)||major<22){process.stderr.write('开发需要 Node 22+。当前应用已自带运行环境，日常使用不受影响。\n');process.exit(1);}
+function run(args){execFileSync(process.platform==='win32'?'npm.cmd':'npm',args,{cwd:root,stdio:'inherit',shell:process.platform==='win32'});}
 if(install&&!existsSync(join(root,'node_modules/typescript/bin/tsc')))run(['ci','--ignore-scripts','--no-audit','--no-fund']);
 let ready=true;
 for(const file of ['package-lock.json','node_modules/typescript/bin/tsc','native/Assistant.swift','runtime/engine.js'])if(!existsSync(join(root,file))){ready=false;process.stderr.write('缺少：'+file+'\n');}

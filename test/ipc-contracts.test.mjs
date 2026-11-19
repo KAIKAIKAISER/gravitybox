@@ -11,6 +11,7 @@ import { AccountsManager } from "../dist/accounts.js";
 import { canonicalPayload, IdempotencyStore } from "../dist/ipc-idempotency.js";
 import { promisify } from "node:util";
 import { ProtobufWriter } from "../dist/protobuf.js";
+import { getIpcEndpoint } from "../dist/platform.js";
 
 // Fixture state and hooks are scoped to this group; child cases run serially.
 describeContractGroup("undefined · audit-p1-backend", { concurrency: false }, async () => {
@@ -48,7 +49,7 @@ async function makeManager() {
 
 function exchange(directory, request, { timeout = 8000 } = {}) {
   return new Promise((resolve, reject) => {
-    const socket = createConnection(join(directory, 'control.sock'));
+    const socket = createConnection(getIpcEndpoint(directory));
     let value = '';
     const timer = setTimeout(() => { socket.destroy(); reject(new Error('IPC 超时')); }, timeout);
     const finish = error => { clearTimeout(timer); socket.destroy(); error ? reject(error) : resolve(value); };
@@ -186,7 +187,7 @@ async function until(fn, timeoutMs = 6000) {
 
 function rpc(directory, payload) {
   return new Promise((resolve, reject) => {
-    const socket = createConnection(join(directory, 'control.sock'));
+    const socket = createConnection(getIpcEndpoint(directory));
     let value = '';
     socket.setTimeout(4000, () => {
       socket.destroy();

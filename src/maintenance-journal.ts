@@ -2,6 +2,7 @@ import { lstat, mkdir, rename, readFile, open } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { atomicJson } from './files.js';
 import { bt } from './i18n.js';
+import { isOwnedByCurrentUser } from './platform.js';
 export interface JournalMove {
     from: string;
     to: string;
@@ -116,7 +117,7 @@ export async function executeMoves(path: string, manifest: MaintenanceManifest, 
 }
 export async function readMaintenanceManifest(path: string): Promise<MaintenanceManifest> {
     const stat = await lstat(path);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== process.getuid?.())
+    if (!stat.isFile() || stat.isSymbolicLink() || !isOwnedByCurrentUser(stat))
         throw Error(bt('maintenance.journal.err.manifest_identity'));
     const manifest = JSON.parse(await readFile(path, 'utf8')) as MaintenanceManifest;
     if (manifest.transaction && (!Array.isArray(manifest.transaction.moves) || !['prepared', 'committed', 'rolled-back', 'recovery-required'].includes(manifest.transaction.phase)

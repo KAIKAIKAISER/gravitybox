@@ -1,12 +1,22 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, readFile, stat as fsStat, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { openAsarArchive } from './asar.js';
 import { assertLoopback } from './cdp.js';
 import { targetForApp } from './application-target.js';
 import { bt } from './i18n.js';
+import {
+  IS_WINDOWS,
+  getAppAsarPath,
+  getAppExecutablePath,
+  getDefaultCacheDir,
+  getLanguageServerPath,
+  normalizePathForCompare,
+  pathStartsWith,
+  readWindowsListeningPorts,
+  readWindowsProcesses,
+} from './platform.js';
 const execFileRaw = promisify(execFile);
 const execute = (file: string, args: string[], timeout = 3000) => execFileRaw(file, args, { timeout });
 export type Endpoint = { port: number; pid: number; browserURL: string; appVersion: string; legacyPatch: boolean; appPath?: string; profile?: string };
@@ -39,7 +49,7 @@ type PersistedBundleEntry = {
 
 const bundleCache = new Map<string, PersistedBundleEntry & { expiresAt: number; hardExpiresAt: number }>();
 const inFlightBundleInspect = new Map<string, Promise<{ version: string; legacyPatch: boolean }>>();
-const BUNDLE_DISK_CACHE_PATH = join(homedir(), 'Library', 'Caches', 'GravityBox', 'bundle-verify-cache-v1.json');
+const BUNDLE_DISK_CACHE_PATH = join(getDefaultCacheDir(), 'bundle-verify-cache-v1.json');
 let diskBundleCacheLoaded = false;
 
 async function ensureDiskBundleCacheLoaded(): Promise<void> {
@@ -90,6 +100,67 @@ export async function inspectBundle(appPath: string): Promise<{ version: string;
   const work = (async () => {
     await ensureDiskBundleCacheLoaded();
     const target = targetForApp(appPath);
+    if (IS_WINDOWS && !appPath.endsWith('.app')) {
+      const asarPath = getAppAsarPath(appPath);
+      const execPath = getAppExecutablePath(appPath, target.executable);
+      const cached = bundleCache.get(appPath);
+      if (cached && cached.hardExpiresAt > Date.now()) {
+        try {
+          const [aStat, eStat] = await Promise.all([fsStat(asarPath), fsStat(execPath)]);
+          if (
+            aStat.mtimeMs === cached.asarMtimeMs &&
+            aStat.size === cached.asarSize &&
+            eStat.mtimeMs === cached.execMtimeMs &&
+            eStat.size === cached.execSize
+          ) {
+            cached.expiresAt = Date.now() + 120_000;
+            return cached.value;
+          }
+        } catch {}
+      }
+      const execStat = await fsStat(execPath);
+      const archive = await openAsarArchive(asarPath, 16_000_000);
+      try {
+        const pkgBuf = await archive.readEntryBuffer(archive.header.files?.['package.json'], 256_000, 1);
+        if (!pkgBuf) throw new Error(bt('discovery.app_mismatch'));
+        const pkg = JSON.parse(pkgBuf.toString('utf8'));
+        if (pkg?.name !== 'antigravity' && pkg?.productName !== 'Antigravity') {
+          throw new Error(bt('discovery.app_mismatch'));
+        }
+        const version = typeof pkg?.version === 'string' ? pkg.version.trim() : '';
+        if (!version) throw new Error(bt('discovery.app_mismatch'));
+        let legacyPatch = false;
+        for (const name of ['preload.js', 'main.js', 'utils.js']) {
+          const entry = archive.header.files?.dist?.files?.[name];
+          if (!entry || entry.unpacked) continue;
+          const bytes = await archive.readEntryBuffer(entry, 3_000_000, 1);
+          if (!bytes) continue;
+          const text = bytes.toString();
+          legacyPatch ||= /ANTIGRAVITY CHINESE LOCALIZATION START|injectAntigravityI18n|__ANTIGRAVITY_I18N_DATA__|createI18nEngine|__ag_hanhua_engine__/.test(text);
+        }
+        const asarStat = await fsStat(asarPath);
+        const val = { version, legacyPatch };
+        const completedAt = Date.now();
+        bundleCache.set(appPath, {
+          value: val,
+          verifiedAt: completedAt,
+          expiresAt: completedAt + 120_000,
+          hardExpiresAt: completedAt + 24 * 3600_000,
+          plistMtimeMs: 0,
+          plistSize: 0,
+          asarMtimeMs: asarStat.mtimeMs,
+          asarSize: archive.fileSize,
+          execMtimeMs: execStat.mtimeMs,
+          execSize: execStat.size,
+          codeResMtimeMs: 0,
+          codeResSize: 0,
+        });
+        void saveDiskBundleCache();
+        return val;
+      } finally {
+        await archive.close();
+      }
+    }
     const plist = join(appPath, 'Contents', 'Info.plist');
     const asarPath = join(appPath, 'Contents', 'Resources', 'app.asar');
     const execPath = join(appPath, 'Contents', 'MacOS', target.executable);
@@ -177,17 +248,36 @@ export async function inspectBundle(appPath: string): Promise<{ version: string;
 async function discoverSingle(appPath: string, profile: string): Promise<Endpoint | undefined> {
   let contents: string;
   try { contents = await readFile(join(profile, 'DevToolsActivePort'), 'utf8'); } catch { return undefined; }
-  const port = Number(contents.split('\n')[0]);
+  const port = Number(contents.split(/\r?\n/)[0]);
   if (!Number.isInteger(port) || port < 1 || port > 65535) return undefined;
-  let listeners: string;
-  try { listeners = (await execute('/usr/sbin/lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fpfn'])).stdout; } catch { return undefined; }
-  const owners = parseListeners(listeners, port);
-  if (owners.length !== 1) return undefined;
-  const owner = owners[0]!;
-  let executable: string;
-  try { executable = (await execute('/usr/sbin/lsof', ['-nP', '-a', '-p', String(owner.pid), '-d', 'txt', '-Fn'])).stdout; } catch { return undefined; }
-  const expected = join(appPath, 'Contents', 'MacOS', targetForApp(appPath).executable);
-  if (!executable.split('\n').includes(`n${expected}`)) return undefined;
+  let ownerPid = 0;
+  if (IS_WINDOWS) {
+    const allPorts = await readWindowsListeningPorts();
+    const matching = allPorts.filter(entry => entry.port === port);
+    for (const entry of matching) {
+      if (![`127.0.0.1:${port}`, `[::1]:${port}`].includes(entry.address)) {
+        throw new Error(bt('discovery.non_loopback'));
+      }
+    }
+    const pids = Array.from(new Set(matching.map(m => m.pid)));
+    if (pids.length !== 1) return undefined;
+    ownerPid = pids[0]!;
+    const procs = await readWindowsProcesses();
+    const proc = procs.find(p => p.pid === ownerPid);
+    const expected = getAppExecutablePath(appPath, targetForApp(appPath).executable);
+    if (!proc || normalizePathForCompare(proc.executablePath) !== normalizePathForCompare(expected)) return undefined;
+  } else {
+    let listeners: string;
+    try { listeners = (await execute('/usr/sbin/lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fpfn'])).stdout; } catch { return undefined; }
+    const owners = parseListeners(listeners, port);
+    if (owners.length !== 1) return undefined;
+    const owner = owners[0]!;
+    ownerPid = owner.pid;
+    let executable: string;
+    try { executable = (await execute('/usr/sbin/lsof', ['-nP', '-a', '-p', String(owner.pid), '-d', 'txt', '-Fn'])).stdout; } catch { return undefined; }
+    const expected = join(appPath, 'Contents', 'MacOS', targetForApp(appPath).executable);
+    if (!executable.split('\n').includes(`n${expected}`)) return undefined;
+  }
   const bundle = await inspectBundle(appPath);
   let response: Response;
   try {
@@ -198,7 +288,7 @@ async function discoverSingle(appPath: string, profile: string): Promise<Endpoin
   if (!version.webSocketDebuggerUrl) return undefined;
   const ws = assertLoopback(version.webSocketDebuggerUrl);
   if (Number(ws.port) !== port) throw new Error(bt('discovery.port_mismatch'));
-  return { port, pid: owner.pid, browserURL: ws.href, appVersion: bundle.version, legacyPatch: bundle.legacyPatch, appPath, profile };
+  return { port, pid: ownerPid, browserURL: ws.href, appVersion: bundle.version, legacyPatch: bundle.legacyPatch, appPath, profile };
 }
 
 export async function discover(appPath: string, profile: string): Promise<Endpoint | undefined> {
@@ -213,6 +303,11 @@ export async function isApplicationRunning(appPath: string): Promise<boolean> {
     target = targetForApp(appPath);
   } catch {
     return false;
+  }
+  if (IS_WINDOWS) {
+    const expectedExecutable = normalizePathForCompare(getAppExecutablePath(appPath, target.executable));
+    const procs = await readWindowsProcesses();
+    return procs.some(p => p.executablePath && normalizePathForCompare(p.executablePath) === expectedExecutable);
   }
   const expectedExecutable = join(appPath, 'Contents', 'MacOS', target.executable);
   try {
@@ -250,6 +345,31 @@ export async function verifyPageService(url: string, appPath: string): Promise<b
   if (cached && cached.expiresAt > now) return cached.valid;
 
   try {
+    if (IS_WINDOWS) {
+      const allPorts = await readWindowsListeningPorts();
+      const matching = allPorts.filter(entry => entry.port === port);
+      for (const entry of matching) {
+        if (![`127.0.0.1:${port}`, `[::1]:${port}`].includes(entry.address)) {
+          throw new Error(bt('discovery.non_loopback'));
+        }
+      }
+      const pids = Array.from(new Set(matching.map(m => m.pid)));
+      if (pids.length !== 1) {
+        verifiedPortCache.delete(cacheKey);
+        return false;
+      }
+      const procs = await readWindowsProcesses();
+      const proc = procs.find(p => p.pid === pids[0]);
+      const lsPath = getLanguageServerPath(appPath);
+      const valid = Boolean(
+        proc?.executablePath &&
+        (normalizePathForCompare(proc.executablePath) === normalizePathForCompare(lsPath) ||
+          pathStartsWith(proc.executablePath, appPath))
+      );
+      if (valid) verifiedPortCache.set(cacheKey, { valid: true, expiresAt: now + 60_000 });
+      else verifiedPortCache.delete(cacheKey);
+      return valid;
+    }
     const listeners = (await execute('/usr/sbin/lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fpfn'])).stdout;
     const owners = parseListeners(listeners, port);
     if (owners.length !== 1) {
@@ -276,9 +396,11 @@ export async function verifyPageService(url: string, appPath: string): Promise<b
 const verifiedLsPidPortsCache = new Map<string, { ports: number[]; expiresAt: number }>();
 
 /** Verify the real executable and official bundle before trusting a language-server listener, returning verified loopback IPv4 ports. */
-export async function resolveVerifiedLanguageServerPorts(pid: number, appPath = '/Applications/Antigravity.app'): Promise<number[] | null> {
+export async function resolveVerifiedLanguageServerPorts(pid: number, appPath = ''): Promise<number[] | null> {
   if (!Number.isSafeInteger(pid) || pid <= 0) return null;
-  const cacheKey = `${pid}:${appPath}`;
+  const effectiveAppPath = appPath || (IS_WINDOWS ? '' : '/Applications/Antigravity.app');
+  if (!effectiveAppPath) return null;
+  const cacheKey = `${pid}:${effectiveAppPath}`;
   const now = Date.now();
   const cachedPorts = verifiedLsPidPortsCache.get(cacheKey);
   if (cachedPorts && cachedPorts.expiresAt > now) {
@@ -291,12 +413,32 @@ export async function resolveVerifiedLanguageServerPorts(pid: number, appPath = 
     }
   }
   try {
-    await inspectBundle(appPath);
+    await inspectBundle(effectiveAppPath);
+    if (IS_WINDOWS) {
+      const [procs, allPorts] = await Promise.all([
+        readWindowsProcesses(),
+        readWindowsListeningPorts(),
+      ]);
+      const proc = procs.find(p => p.pid === pid);
+      const expectedLs = getLanguageServerPath(effectiveAppPath);
+      if (!proc?.executablePath || normalizePathForCompare(proc.executablePath) !== normalizePathForCompare(expectedLs)) {
+        return null;
+      }
+      const pidListeners = allPorts.filter(entry => entry.pid === pid);
+      if (pidListeners.length === 0 || !pidListeners.every(entry => /^(?:127\.0\.0\.1|\[::1\]):\d+$/.test(entry.address))) {
+        return null;
+      }
+      const ports = Array.from(new Set(pidListeners.filter(e => e.address.startsWith('127.0.0.1:')).map(e => e.port)));
+      if (ports.length > 0) {
+        verifiedLsPidPortsCache.set(cacheKey, { ports, expiresAt: Date.now() + 15_000 });
+      }
+      return ports;
+    }
     const [execRes, listenerRes] = await Promise.all([
       execute('/usr/sbin/lsof', ['-nP', '-a', '-p', String(pid), '-d', 'txt', '-Fn']),
       execute('/usr/sbin/lsof', ['-nP', '-a', '-p', String(pid), '-iTCP', '-sTCP:LISTEN', '-Fn']),
     ]);
-    if (!execRes.stdout.split('\n').includes('n' + join(appPath, 'Contents/Resources/bin/language_server'))) return null;
+    if (!execRes.stdout.split('\n').includes('n' + join(effectiveAppPath, 'Contents/Resources/bin/language_server'))) return null;
     const listenerOut = listenerRes.stdout;
     const listeners = listenerOut.split('\n').filter(line => line.startsWith('n'));
     if (listeners.length === 0 || !listeners.every(line => /^n(?:127\.0\.0\.1|\[::1\]):\d+$/.test(line))) return null;

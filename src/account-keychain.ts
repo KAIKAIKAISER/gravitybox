@@ -1,6 +1,7 @@
 import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { bt } from './i18n.js';
+import { IS_WINDOWS, winCredDelete, winCredRead, winCredWrite } from './platform.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -12,6 +13,13 @@ export interface KeychainAdapter {
 
 export class SystemKeychainAdapter implements KeychainAdapter {
   async readPassword(service: string, account: string): Promise<string | null> {
+    if (IS_WINDOWS) {
+      try {
+        return await winCredRead(service, account);
+      } catch {
+        throw new Error(bt('keychain.err.read'));
+      }
+    }
     try {
       const { stdout } = await execFileAsync('/usr/bin/security', [
         'find-generic-password',
@@ -29,6 +37,14 @@ export class SystemKeychainAdapter implements KeychainAdapter {
   }
 
   async writePassword(service: string, account: string, password: string): Promise<void> {
+    if (IS_WINDOWS) {
+      try {
+        await winCredWrite(service, account, password);
+        return;
+      } catch {
+        throw new Error(bt('keychain.err.write'));
+      }
+    }
     return new Promise((resolve, reject) => {
       const q = (val: string) => `"${String(val).replace(/[\\"\r\n]/g, m => (m === '\r' || m === '\n' ? '' : `\\${m}`))}"`;
       // 通过 security -i 批处理从 stdin 传入完整命令与密码，既不在 argv 暴露凭据，也不触发 /dev/tty getpass() 阻塞
@@ -61,6 +77,14 @@ export class SystemKeychainAdapter implements KeychainAdapter {
   }
 
   async deletePassword(service: string, account: string): Promise<void> {
+    if (IS_WINDOWS) {
+      try {
+        await winCredDelete(service, account);
+        return;
+      } catch {
+        throw new Error(bt('keychain.err.delete'));
+      }
+    }
     try {
       await execFileAsync('/usr/bin/security', ['delete-generic-password', '-s', service, '-a', account], { timeout: 5000 });
     } catch (error) { if ((error as { code?: number }).code !== 44) throw new Error(bt('keychain.err.delete')); }
@@ -97,6 +121,22 @@ export interface KeychainSyncAccount {
   };
 }
 
+export function decodeKeyringPayload(pass: string | null | undefined): any | null {
+  if (!pass || typeof pass !== 'string') return null;
+  const trimmed = pass.trim();
+  if (!trimmed) return null;
+  try {
+    if (trimmed.startsWith('go-keyring-base64:')) {
+      const raw = Buffer.from(trimmed.slice('go-keyring-base64:'.length), 'base64').toString('utf8');
+      return JSON.parse(raw);
+    }
+    if (trimmed.startsWith('{')) {
+      return JSON.parse(trimmed);
+    }
+  } catch {}
+  return null;
+}
+
 /**
  * 将指定账号写入系统 Keychain (gemini/antigravity) 免密持久化
  */
@@ -125,6 +165,11 @@ export async function syncAccountToKeychain(
     ...(acc.token.is_gcp_tos ? {} : { auth_method: 'consumer' }),
     id_token_email: acc.email,
   });
+  if (IS_WINDOWS && keychain instanceof SystemKeychainAdapter) {
+    // Windows go-keyring stores raw UTF-8 JSON in Generic CredentialBlob without base64 wrapper.
+    await keychain.writePassword('gemini', 'antigravity', payload);
+    return;
+  }
   const b64 = Buffer.from(payload, 'utf8').toString('base64');
   await keychain.writePassword('gemini', 'antigravity', `go-keyring-base64:${b64}`);
 }

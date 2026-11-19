@@ -7,6 +7,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { getIpcEndpoint } from '../dist/platform.js';
 
 const exec = promisify(execFile);
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -25,7 +26,7 @@ async function until(fn, timeout = 10000) {
 /** 测试用 IPC 客户端：整包累积 Buffer 后一次性 UTF-8 解码，与生产 CLI 的流式解码相互独立。 */
 function rpc(directory, payload) {
   return new Promise((resolve, reject) => {
-    const socket = createConnection(join(directory, 'control.sock'));
+    const socket = createConnection(getIpcEndpoint(directory));
     const chunks = [];
     socket.setTimeout(5000, () => { socket.destroy(); reject(new Error('IPC 超时')); });
     socket.on('connect', () => socket.write(JSON.stringify(payload) + '\n'));
@@ -44,7 +45,7 @@ function rpc(directory, payload) {
 // 旧实现逐 chunk toString() 会产生 U+FFFD 并损坏 coverage_report / dictionary_export 的 JSON。
 test('I04: CLI --command 在多字节 chunk 边界不产生 U+FFFD', { timeout: 60000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'gb-p2-cli-'));
-  const socketPath = join(directory, 'control.sock');
+  const socketPath = getIpcEndpoint(directory);
   const payload = {
     ok: true,
     report: {

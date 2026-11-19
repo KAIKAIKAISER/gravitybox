@@ -1,8 +1,9 @@
 import { type ApplicationChannel, type ApplicationTarget, applicationTarget } from './application-target.js';
 import { spawn, execFile } from 'node:child_process';
+import type { DatabaseSync } from 'node:sqlite';
 import { promisify } from 'node:util';
 import { readFile, mkdir, lstat, unlink, readdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import { atomicJson, atomicText } from './files.js';
 import { withProcessLease } from './process-lock.js';
@@ -11,6 +12,7 @@ import { ProtobufWriter as Writer } from './protobuf.js';
 import { replaceTopicRow } from './account-state.js';
 export { replaceTopicRow } from './account-state.js';
 import { bt } from './i18n.js';
+import { IS_WINDOWS, isOwnedByCurrentUser, pathStartsWith, readWindowsProcesses } from './platform.js';
 
 const run = promisify(execFile);
 const TOKEN = 'antigravityUnifiedStateSync.oauthToken';
@@ -56,19 +58,27 @@ function rowsDigest(rows: Rows): string {
 // sqlite3 stays in BEGIN IMMEDIATE while the other resources are committed. SQL goes through
 // stdin, so neither tokens nor database values appear in command arguments or diagnostics.
 export class DatabaseTransaction {
-  private child;
+  private child?: ReturnType<typeof spawn>;
+  private sqliteDb?: DatabaseSync;
+  private inTx = false;
+  private dbPath: string;
   private output = '';
   private pending?: { marker: string; resolve: (s: string) => void; reject: (e: Error) => void };
   private failed = false;
   private exited: Promise<void>;
   constructor(path: string) {
+    this.dbPath = path;
+    if (IS_WINDOWS) {
+      this.exited = Promise.resolve();
+      return;
+    }
     this.child = spawn('/usr/bin/sqlite3', ['-batch', '-bail', path], { stdio: ['pipe', 'pipe', 'pipe'] });
-    this.exited = new Promise(resolve => this.child.once('close', () => resolve()));
-    this.child.stdin.on('error', () => this.fail());
-    this.child.stderr.on('data', () => this.fail());
+    this.exited = new Promise(resolve => this.child!.once('close', () => resolve()));
+    this.child.stdin!.on('error', () => this.fail());
+    this.child.stderr!.on('data', () => this.fail());
     this.child.on('error', () => this.fail());
     this.child.on('exit', () => this.fail());
-    this.child.stdout.on('data', chunk => {
+    this.child.stdout!.on('data', chunk => {
       this.output += chunk.toString();
       if (this.output.length > 4_000_000) return this.fail();
       const marker = this.pending?.marker;
@@ -81,26 +91,80 @@ export class DatabaseTransaction {
   }
   private fail() { this.failed = true; this.pending?.reject(new Error(bt('switch.err.db_tx_failed'))); this.pending = undefined; }
   async sql(sql: string): Promise<string> {
-    if (this.failed) throw new Error(bt('switch.err.db_closed'));
+    if (IS_WINDOWS) throw new Error(bt('switch.err.db_tx_failed'));
+    if (this.failed || !this.child?.stdin) throw new Error(bt('switch.err.db_closed'));
     const marker = `GB_${randomUUID()}`;
     const response = new Promise<string>((resolve, reject) => { this.pending = { marker, resolve, reject }; });
     this.child.stdin.write(`${sql}\n.print ${marker}\n`);
     let timer: ReturnType<typeof setTimeout> | undefined;
-    try { return await Promise.race([response, new Promise<never>((_, reject) => { timer = setTimeout(() => { this.child.kill(); reject(new Error(bt('switch.err.db_busy'))); }, 6000); })]); }
+    try { return await Promise.race([response, new Promise<never>((_, reject) => { timer = setTimeout(() => { this.child?.kill(); reject(new Error(bt('switch.err.db_busy'))); }, 6000); })]); }
     finally { clearTimeout(timer); }
   }
-  async begin() { await this.sql('.timeout 3000\n.mode json\nBEGIN IMMEDIATE;'); }
+  async begin() {
+    if (IS_WINDOWS) {
+      try {
+        const { DatabaseSync: SqliteDb } = await import('node:sqlite');
+        this.sqliteDb = new SqliteDb(this.dbPath);
+        this.sqliteDb.exec('PRAGMA busy_timeout = 3000; BEGIN IMMEDIATE;');
+        this.inTx = true;
+      } catch {
+        this.failed = true;
+        throw new Error(bt('switch.err.db_busy'));
+      }
+      return;
+    }
+    await this.sql('.timeout 3000\n.mode json\nBEGIN IMMEDIATE;');
+  }
   async rows(): Promise<Rows> {
+    if (IS_WINDOWS) {
+      if (!this.sqliteDb || this.failed) throw new Error(bt('switch.err.db_closed'));
+      const placeholders = KEYS.map(() => '?').join(',');
+      const result = this.sqliteDb.prepare(`SELECT key,value FROM ItemTable WHERE key IN (${placeholders})`).all(...KEYS) as Array<{ key: string; value: string }>;
+      return Object.fromEntries(result.map(r => [String(r.key), String(r.value)]));
+    }
     const raw = await this.sql(`SELECT key,value FROM ItemTable WHERE key IN (${KEYS.map(quote).join(',')});`);
     return Object.fromEntries((JSON.parse(raw || '[]') as { key: string; value: string }[]).map(r => [r.key, r.value]));
   }
   async replace(rows: Rows) {
+    if (IS_WINDOWS) {
+      if (!this.sqliteDb || this.failed) throw new Error(bt('switch.err.db_closed'));
+      const placeholders = KEYS.map(() => '?').join(',');
+      this.sqliteDb.prepare(`DELETE FROM ItemTable WHERE key IN (${placeholders})`).run(...KEYS);
+      const insert = this.sqliteDb.prepare('INSERT INTO ItemTable(key,value) VALUES(?,?)');
+      for (const [k, v] of Object.entries(rows)) {
+        insert.run(k, v);
+      }
+      return;
+    }
     await this.sql(`DELETE FROM ItemTable WHERE key IN (${KEYS.map(quote).join(',')});\n${Object.entries(rows).map(([k, v]) => `INSERT INTO ItemTable(key,value) VALUES(${quote(k)},${quote(v)});`).join('\n')}`);
   }
-  async finish(commit: boolean) { try { await this.sql(commit ? 'COMMIT;' : 'ROLLBACK;'); } finally { this.child.stdin.end(); } }
+  async finish(commit: boolean) {
+    if (IS_WINDOWS) {
+      if (this.sqliteDb && this.inTx) {
+        try {
+          this.sqliteDb.exec(commit ? 'COMMIT;' : 'ROLLBACK;');
+        } finally {
+          this.inTx = false;
+        }
+      }
+      return;
+    }
+    try { await this.sql(commit ? 'COMMIT;' : 'ROLLBACK;'); } finally { this.child?.stdin?.end(); }
+  }
   async close() {
-    this.child.stdin.end();
-    const timer = setTimeout(() => this.child.kill(), 1500);
+    if (IS_WINDOWS) {
+      if (this.sqliteDb) {
+        if (this.inTx) {
+          try { this.sqliteDb.exec('ROLLBACK;'); } catch {}
+          this.inTx = false;
+        }
+        try { this.sqliteDb.close(); } catch {}
+        this.sqliteDb = undefined;
+      }
+      return;
+    }
+    this.child?.stdin?.end();
+    const timer = setTimeout(() => this.child?.kill(), 1500);
     try { await this.exited; } finally { clearTimeout(timer); }
   }
 }
@@ -143,7 +207,8 @@ function sanitizeJournalRows(rows: Rows): Rows {
 
 function sanitizeJournalFiles(files: SavedFile[]): SavedFile[] {
   return (files || []).map(f => {
-    const isAccountFile = f.path.includes('/accounts/') || (!f.path.endsWith('accounts.json') && f.path.endsWith('.json'));
+    const norm = f.path.replaceAll('\\', '/');
+    const isAccountFile = norm.includes('/accounts/') || (!norm.endsWith('accounts.json') && norm.endsWith('.json'));
     if (isAccountFile) {
       return {
         path: f.path,
@@ -197,7 +262,7 @@ export class AccountSwitchService {
     const allowed = new Set([join(this.options.stateDir, 'accounts.json')]);
     if (record.version !== 1 || !['prepared', 'committed'].includes(record.phase) || record.databasePath !== dbPath ||
         !Array.isArray(record.files) || record.files.some(f => !allowed.has(f.path) &&
-          !(f.path.startsWith(join(this.options.stateDir, 'accounts') + '/') && /^[a-zA-Z0-9_-]+\.json$/.test(f.path.slice(join(this.options.stateDir, 'accounts').length + 1))))) {
+          !(f.path.startsWith(join(this.options.stateDir, 'accounts') + sep) && /^[a-zA-Z0-9_-]+\.json$/.test(f.path.slice(join(this.options.stateDir, 'accounts').length + 1))))) {
       throw new Error(bt('switch.err.rollback_identity'));
     }
     const currentJournal = JSON.parse(await readFile(this.journalPath, 'utf8')) as Journal;
@@ -237,15 +302,30 @@ export class AccountSwitchService {
     } finally { await tx?.close(); }
   }
   private async guardStopped() {
-    const candidatePrefixes = Array.from(
-      // Insiders shares official credentials: block switching while it runs, without managing it.
-      new Set([this.target.appPath, '/Applications/Antigravity.app', '/Applications/Antigravity - Insiders.app']),
-    ).map(p => p + '/Contents/');
-    const running = this.options.isRunning ? await this.options.isRunning() :
-      (await run('/bin/ps', ['-ax', '-ww', '-o', 'args='], { timeout: 3000 })).stdout.split('\n').some(line => {
+    let running = false;
+    if (this.options.isRunning) {
+      running = await this.options.isRunning();
+    } else if (IS_WINDOWS) {
+      const procs = await readWindowsProcesses();
+      const targetRoot = this.target.appPath;
+      running = procs.some(p => {
+        const exe = p.executablePath || p.commandLine;
+        return Boolean(
+          (targetRoot && pathStartsWith(exe, targetRoot)) ||
+          /\bAntigravity\.exe\b/i.test(p.name) ||
+          /\bAntigravity - Insiders\.exe\b/i.test(p.name)
+        );
+      });
+    } else {
+      const candidatePrefixes = Array.from(
+        // Insiders shares official credentials: block switching while it runs, without managing it.
+        new Set([this.target.appPath, '/Applications/Antigravity.app', '/Applications/Antigravity - Insiders.app']),
+      ).map(p => p + '/Contents/');
+      running = (await run('/bin/ps', ['-ax', '-ww', '-o', 'args='], { timeout: 3000 })).stdout.split('\n').some(line => {
         const trimmed = line.trim();
         return candidatePrefixes.some(prefix => trimmed.startsWith(prefix));
       });
+    }
     if (running) throw new Error(bt('switch.err.stop_app_first'));
   }
   private async archivePreviousJournal(previous: Journal) {
@@ -279,7 +359,7 @@ export class AccountSwitchService {
 
   private async regular(path: string) {
     const info = await lstat(path);
-    if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid?.()) throw new Error(bt('switch.err.invalid_login_file'));
+    if (!info.isFile() || info.isSymbolicLink() || !isOwnedByCurrentUser(info)) throw new Error(bt('switch.err.invalid_login_file'));
   }
   private async optionalRegular(path: string): Promise<boolean> {
     try {
@@ -374,7 +454,7 @@ export class AccountSwitchService {
           files: filesWithDigest.map(f => ({
             path: f.path,
             before: f.before,
-            after: f.path.includes('/accounts/') ? '[REDACTED_ACCOUNT]' : f.after,
+            after: f.path.replaceAll('\\', '/').includes('/accounts/') ? '[REDACTED_ACCOUNT]' : f.after,
             afterDigest: f.afterDigest,
           })),
         });

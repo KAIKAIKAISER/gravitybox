@@ -1,8 +1,9 @@
 import { open, lstat, unlink, mkdir, readFile } from 'node:fs/promises';
 import { renameSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { bt } from './i18n.js';
+import { isOwnedByCurrentUser } from './platform.js';
 
 export interface AtomicWriteOptions {
   durability?: 'strict' | 'relaxed';
@@ -14,7 +15,7 @@ export async function atomicText(path: string, text: string, signal?: AbortSigna
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   try {
     const info = await lstat(path);
-    if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid?.()) throw new Error(bt('files.refuse_non_user_file'));
+    if (!info.isFile() || info.isSymbolicLink() || !isOwnedByCurrentUser(info)) throw new Error(bt('files.refuse_non_user_file'));
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   const temp = `${path}.${randomUUID()}.tmp`;
   try {
@@ -57,8 +58,7 @@ export async function readOptionalJson<T = Record<string, unknown>>(path: string
 }
 
 function basenameForLog(filePath: string): string {
-  const idx = filePath.lastIndexOf('/');
-  return idx >= 0 ? filePath.slice(idx + 1) : filePath;
+  return basename(filePath);
 }
 
 type FileChange = { path: string; before: string | null; after: string | null };
@@ -86,7 +86,7 @@ export async function commitFileSet(journalPath: string, values: { path: string;
   const changes: FileChange[] = [];
   for (const value of values) {
     const info = await lstat(value.path).catch(error => { if (error.code !== 'ENOENT') throw error; return null; });
-    if (info && (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid?.())) throw new Error(bt('files.delete_identity_mismatch'));
+    if (info && (!info.isFile() || info.isSymbolicLink() || !isOwnedByCurrentUser(info))) throw new Error(bt('files.delete_identity_mismatch'));
     changes.push({ ...value, before: await readOptional(value.path) });
   }
   await atomicJson(journalPath, { schema: 1, changes });
@@ -119,7 +119,7 @@ export async function commitAccountAndIndex(accountPath:string,accountData:unkno
   await mkdir(dirname(accountPath),{recursive:true,mode:0o700});
   await mkdir(dirname(indexPath),{recursive:true,mode:0o700});
   for(const target of [accountPath,indexPath]) {
-    try {const info=await lstat(target);if(!info.isFile()||info.isSymbolicLink()||info.uid!==process.getuid?.())throw Error(bt('files.refuse_non_user_file'));}
+    try {const info=await lstat(target);if(!info.isFile()||info.isSymbolicLink()||!isOwnedByCurrentUser(info))throw Error(bt('files.refuse_non_user_file'));}
     catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
   }
   const journalPath=indexPath+'.commit.json';

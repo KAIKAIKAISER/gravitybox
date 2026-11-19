@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-Hans">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>GravityBox Tray</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="popover-shell">
+    <div class="popover-top">
+      <div class="popover-header-row">
+        <div style="display:flex;align-items:center;gap:8px">
+          <img src="../../assets/master-1024.png" alt="" style="width:18px;height:18px;border-radius:4px" />
+          <strong style="font-size:14.5px">GravityBox</strong>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px">
+          <button class="btn btn-sm" id="pop-refresh">刷新</button>
+          <button class="btn btn-sm" id="pop-settings" title="Settings">⚙</button>
+        </div>
+      </div>
+      <div class="segmented" id="pop-tabs" style="width:100%;display:grid;grid-template-columns:repeat(3,1fr)">
+        <button data-tab="usage" class="active">用量</button>
+        <button data-tab="quota">配额</button>
+        <button data-tab="accounts">账号</button>
+      </div>
+    </div>
+
+    <div class="popover-scroll" id="pop-body"></div>
+
+    <div class="popover-footer">
+      <button class="btn btn-sm" id="pop-open-ag">打开 Antigravity</button>
+      <button class="btn btn-sm" id="pop-open-main">打开主界面 ↗</button>
+    </div>
+  </div>
+  <script type="module" src="./popover.js"></script>
+</body>
+</html>
